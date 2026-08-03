@@ -42,6 +42,44 @@ class FakeMt5:
         return (0, "ok")
 
 
+class FakeNettingMt5(FakeMt5):
+    TRADE_ACTION_DEAL = 1
+    POSITION_TYPE_BUY = 0
+    POSITION_TYPE_SELL = 1
+    ORDER_TYPE_BUY = 0
+    ORDER_TYPE_SELL = 1
+    ORDER_TIME_GTC = 0
+    ORDER_FILLING_FOK = 0
+    ORDER_FILLING_IOC = 1
+    ORDER_FILLING_RETURN = 2
+    SYMBOL_TRADE_EXECUTION_MARKET = 2
+
+    def __init__(self, positions=(), orders=()):
+        super().__init__(list(positions))
+        self.orders = list(orders)
+        self.tick = SimpleNamespace(bid=99.5, ask=100.5)
+
+    def symbol_info_tick(self, symbol):
+        return self.tick
+
+    def order_check(self, request):
+        return SimpleNamespace(retcode=0, comment="ok")
+
+    def order_send(self, request):
+        self.requests.append(dict(request))
+        if request["action"] == self.TRADE_ACTION_REMOVE:
+            self.orders = [
+                order for order in self.orders if order.ticket != request["order"]
+            ]
+        elif request["action"] == self.TRADE_ACTION_DEAL:
+            self.positions = [
+                position
+                for position in self.positions
+                if position.ticket != request["position"]
+            ]
+        return SimpleNamespace(retcode=self.TRADE_RETCODE_DONE, comment="done")
+
+
 class HedgingPreparationTests(unittest.TestCase):
     def test_requires_hedging_margin_mode(self):
         mt5 = SimpleNamespace(ACCOUNT_MARGIN_MODE_RETAIL_HEDGING=2)
@@ -93,6 +131,115 @@ class HedgingPreparationTests(unittest.TestCase):
                 mt5, "XAUUSD", 1234, "AURUM:102", ExecutionKind.MARKET
             )
         )
+
+
+class NettingPreparationTests(unittest.TestCase):
+    def test_pending_orders_are_removed_before_buy_position_is_closed(self):
+        mt5 = FakeNettingMt5(
+            positions=[
+                SimpleNamespace(
+                    ticket=42,
+                    type=FakeNettingMt5.POSITION_TYPE_BUY,
+                    volume=0.3,
+                )
+            ],
+            orders=[SimpleNamespace(ticket=77), SimpleNamespace(ticket=78)],
+        )
+        symbol_info = SimpleNamespace(
+            digits=2,
+            filling_mode=1,
+            trade_exemode=FakeNettingMt5.SYMBOL_TRADE_EXECUTION_MARKET,
+        )
+
+        status, detail = _prepare_for_new_signal(
+            mt5,
+            "XAUUSD",
+            1234,
+            replace_existing=True,
+            symbol_info=symbol_info,
+            deviation_points=25,
+        )
+
+        self.assertEqual(status, "ready")
+        self.assertIn("removed 2 pending order(s), closed 1 position(s)", detail)
+        self.assertEqual(
+            [request["action"] for request in mt5.requests],
+            [
+                FakeNettingMt5.TRADE_ACTION_REMOVE,
+                FakeNettingMt5.TRADE_ACTION_REMOVE,
+                FakeNettingMt5.TRADE_ACTION_DEAL,
+            ],
+        )
+        close_request = mt5.requests[-1]
+        self.assertEqual(close_request["position"], 42)
+        self.assertEqual(close_request["type"], FakeNettingMt5.ORDER_TYPE_SELL)
+        self.assertEqual(close_request["price"], 99.5)
+        self.assertEqual(close_request["volume"], 0.3)
+        self.assertEqual(close_request["deviation"], 25)
+
+    def test_sell_position_is_closed_with_buy_at_ask(self):
+        mt5 = FakeNettingMt5(
+            positions=[
+                SimpleNamespace(
+                    ticket=43,
+                    type=FakeNettingMt5.POSITION_TYPE_SELL,
+                    volume=0.2,
+                )
+            ]
+        )
+        symbol_info = SimpleNamespace(
+            digits=2,
+            filling_mode=1,
+            trade_exemode=FakeNettingMt5.SYMBOL_TRADE_EXECUTION_MARKET,
+        )
+
+        status, _ = _prepare_for_new_signal(
+            mt5,
+            "XAUUSD",
+            1234,
+            replace_existing=True,
+            symbol_info=symbol_info,
+        )
+
+        self.assertEqual(status, "ready")
+        close_request = mt5.requests[-1]
+        self.assertEqual(close_request["type"], FakeNettingMt5.ORDER_TYPE_BUY)
+        self.assertEqual(close_request["price"], 100.5)
+
+    def test_rejected_pending_removal_blocks_position_close(self):
+        class RejectingMt5(FakeNettingMt5):
+            def order_send(self, request):
+                self.requests.append(dict(request))
+                return SimpleNamespace(retcode=10030, comment="rejected")
+
+        mt5 = RejectingMt5(
+            positions=[
+                SimpleNamespace(
+                    ticket=42,
+                    type=FakeNettingMt5.POSITION_TYPE_BUY,
+                    volume=0.3,
+                )
+            ],
+            orders=[SimpleNamespace(ticket=77)],
+        )
+        symbol_info = SimpleNamespace(
+            digits=2,
+            filling_mode=1,
+            trade_exemode=FakeNettingMt5.SYMBOL_TRADE_EXECUTION_MARKET,
+        )
+
+        status, detail = _prepare_for_new_signal(
+            mt5,
+            "XAUUSD",
+            1234,
+            replace_existing=True,
+            symbol_info=symbol_info,
+        )
+
+        self.assertEqual(status, "failed")
+        self.assertIn("could not remove pending order 77", detail)
+        self.assertEqual(len(mt5.requests), 1)
+        self.assertEqual(len(mt5.positions), 1)
 
 
 class PendingOrderTypeTests(unittest.TestCase):

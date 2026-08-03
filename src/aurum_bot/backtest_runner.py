@@ -392,6 +392,7 @@ def run_backtest(
             "risk_percent": trading.risk_percent,
             "take_profit_target": trading.take_profit_target,
             "strict_call_entry": trading.strict_call_entry,
+            "enable_indicator_2": trading.enable_indicator_2,
             "min_market_risk_percent": trading.min_market_risk_percent,
             "max_market_risk_percent": trading.max_market_risk_percent,
             "lot_step": trading.lot_step,

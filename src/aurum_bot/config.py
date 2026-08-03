@@ -32,7 +32,8 @@ class TradingConfig:
     retry_delay_seconds: float
     magic_number: int
     take_profit_target: int = 2
-    strict_call_entry: bool = False
+    strict_call_entry: bool = True
+    enable_indicator_2: bool = False
 
 
 @dataclass(frozen=True)
@@ -143,7 +144,8 @@ def load_config(config_path: str | Path) -> AppConfig:
         retry_delay_seconds=max(0.0, float(trading_raw.get("retry_delay_seconds", 2))),
         magic_number=int(trading_raw.get("magic_number", 397897)),
         take_profit_target=int(trading_raw.get("take_profit_target", 2)),
-        strict_call_entry=bool(trading_raw.get("strict_call_entry", False)),
+        strict_call_entry=bool(trading_raw.get("strict_call_entry", True)),
+        enable_indicator_2=bool(trading_raw.get("enable_indicator_2", False)),
     )
     if trading.risk_percent != 1.0:
         raise ValueError("This strategy is locked to the agreed nominal risk_percent: 1.0")

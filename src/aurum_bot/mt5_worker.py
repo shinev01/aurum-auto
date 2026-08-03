@@ -41,12 +41,124 @@ def _is_hedging_account(mt5: Any, account_info: Any) -> bool:
 
 
 def _prepare_for_new_signal(
-    mt5: Any, symbol: str, magic: int
+    mt5: Any,
+    symbol: str,
+    magic: int,
+    *,
+    replace_existing: bool = False,
+    symbol_info: Any | None = None,
+    deviation_points: int = 20,
 ) -> tuple[str, str]:
-    del mt5, symbol, magic
+    if not replace_existing:
+        return (
+            "ready",
+            "hedging mode: existing positions and pending orders are preserved",
+        )
+    if symbol_info is None:
+        return "failed", "netting mode: symbol information is unavailable"
+
+    orders = mt5.orders_get(symbol=symbol)
+    if orders is None:
+        return "failed", f"netting mode: orders_get failed: {mt5.last_error()}"
+    removed = 0
+    for order in orders:
+        result = mt5.order_send(
+            {
+                "action": mt5.TRADE_ACTION_REMOVE,
+                "order": int(order.ticket),
+                "symbol": symbol,
+                "magic": magic,
+                "comment": "AURUM:replace",
+            }
+        )
+        if result is None or int(result.retcode) not in _success_codes(mt5):
+            detail = mt5.last_error() if result is None else (
+                f"retcode={result.retcode}: {result.comment}"
+            )
+            return (
+                "failed",
+                f"netting mode: could not remove pending order {order.ticket}: {detail}",
+            )
+        removed += 1
+
+    remaining_orders = None
+    for probe in range(3):
+        remaining_orders = mt5.orders_get(symbol=symbol)
+        if remaining_orders is None or not remaining_orders:
+            break
+        if probe < 2:
+            time.sleep(0.1)
+    if remaining_orders is None:
+        return "failed", f"netting mode: order verification failed: {mt5.last_error()}"
+    if remaining_orders:
+        tickets = ", ".join(str(order.ticket) for order in remaining_orders)
+        return "failed", f"netting mode: pending orders remain: {tickets}"
+
+    positions = mt5.positions_get(symbol=symbol)
+    if positions is None:
+        return "failed", f"netting mode: positions_get failed: {mt5.last_error()}"
+    closed = 0
+    for position in positions:
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            return "failed", f"netting mode: no tick for position close: {mt5.last_error()}"
+        is_buy = int(position.type) == int(mt5.POSITION_TYPE_BUY)
+        close_type = mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY
+        close_price = float(tick.bid) if is_buy else float(tick.ask)
+        base_request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "position": int(position.ticket),
+            "volume": float(position.volume),
+            "type": close_type,
+            "price": _normalized(close_price, int(symbol_info.digits)),
+            "deviation": int(deviation_points),
+            "magic": magic,
+            "comment": "AURUM:replace",
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+        close_detail = "position close was not sent"
+        close_ok = False
+        for filling in _filling_candidates(mt5, symbol_info, ExecutionKind.MARKET):
+            request = dict(base_request)
+            request["type_filling"] = filling
+            check = mt5.order_check(request)
+            if check is None:
+                close_detail = f"order_check failed: {mt5.last_error()}"
+                continue
+            if int(check.retcode) != 0:
+                close_detail = f"order_check retcode={check.retcode}: {check.comment}"
+                continue
+            result = mt5.order_send(request)
+            if result is None:
+                close_detail = f"order_send failed: {mt5.last_error()}"
+                continue
+            close_detail = f"retcode={result.retcode}: {result.comment}"
+            if int(result.retcode) in _success_codes(mt5):
+                close_ok = True
+                break
+        if not close_ok:
+            return (
+                "failed",
+                f"netting mode: could not close position {position.ticket}: {close_detail}",
+            )
+        closed += 1
+
+    remaining_positions = None
+    for probe in range(3):
+        remaining_positions = mt5.positions_get(symbol=symbol)
+        if remaining_positions is None or not remaining_positions:
+            break
+        if probe < 2:
+            time.sleep(0.1)
+    if remaining_positions is None:
+        return "failed", f"netting mode: position verification failed: {mt5.last_error()}"
+    if remaining_positions:
+        tickets = ", ".join(str(position.ticket) for position in remaining_positions)
+        return "failed", f"netting mode: positions remain: {tickets}"
     return (
         "ready",
-        "hedging mode: existing positions and pending orders are preserved",
+        f"netting mode: removed {removed} pending order(s), closed {closed} position(s)",
     )
 
 
@@ -265,13 +377,6 @@ def execute(payload: dict[str, Any]) -> ExecutionResult:
                 "failed",
                 f"account currency is {account_info.currency}, expected USD",
             )
-        if not _is_hedging_account(mt5, account_info):
-            return ExecutionResult(
-                account.name,
-                "failed",
-                "account is not in MT5 hedging mode; refusing independent "
-                "same-symbol positions",
-            )
         if not bool(account_info.trade_allowed) or not bool(terminal_info.trade_allowed):
             return ExecutionResult(
                 account.name,
@@ -296,7 +401,12 @@ def execute(payload: dict[str, Any]) -> ExecutionResult:
             )
 
         preparation_status, preparation_detail = _prepare_for_new_signal(
-            mt5, broker_symbol, magic
+            mt5,
+            broker_symbol,
+            magic,
+            replace_existing=not _is_hedging_account(mt5, account_info),
+            symbol_info=symbol_info,
+            deviation_points=int(trading["deviation_points"]),
         )
         if preparation_status != "ready":
             return ExecutionResult(account.name, preparation_status, preparation_detail)

@@ -11,7 +11,9 @@ trading:
   # Live orders use the selected target from each call: 1, 2, 3, or 4.
   take_profit_target: 2
   # true: always place an exact-TVH pending order (limit/stop), never enter at market.
-  strict_call_entry: false
+  strict_call_entry: true
+  # false: archive calls without an image; true: also execute them in MT5.
+  enable_indicator_2: false
   # Enter at market only while stop risk is within the inclusive 0.9R-1.1R range.
   min_market_risk_percent: 0.9
   max_market_risk_percent: 1.1

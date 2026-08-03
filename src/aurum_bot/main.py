@@ -40,6 +40,11 @@ class JournalExecution:
     recorded_at: datetime
 
 
+def _indicator_execution_enabled(has_image: bool, enable_indicator_2: bool) -> bool:
+    """Индюк 1 is always enabled; Индюк 2 follows its YAML switch."""
+    return has_image or enable_indicator_2
+
+
 def configure_logging(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     formatter = logging.Formatter(
@@ -103,11 +108,12 @@ async def handle_message(
         LOGGER.info("Message %s ignored: not an allowed entry call", message_id)
         return
 
+    has_image = message_has_image(message)
     historical_signal = parse_historical_signal(
         message_id,
         message.raw_text,
         message.date,
-        has_image=message_has_image(message),
+        has_image=has_image,
     )
     if historical_signal is not None:
         archived = upsert_signal_archive(
@@ -127,23 +133,28 @@ async def handle_message(
             message_id,
         )
 
-    if not message_has_image(message):
+    if not _indicator_execution_enabled(
+        has_image,
+        config.trading.enable_indicator_2,
+    ):
         state.mark(
             message_id,
             "ignored_no_image",
             signal=signal.to_dict(),
         )
         LOGGER.info(
-            "Signal %s archived as Индюк 2 but ignored: entry call has no "
-            "attached image",
+            "Signal %s archived as Индюк 2 but ignored: "
+            "trading.enable_indicator_2 is false",
             message_id,
         )
         return
 
+    indicator = "Индюк 1" if has_image else "Индюк 2"
     state.mark(message_id, "executing", signal=signal.to_dict())
     LOGGER.info(
-        "Signal %s (Индюк 1): %s %s entry=%s SL=%s TP%s=%s strict_entry=%s",
+        "Signal %s (%s): %s %s entry=%s SL=%s TP%s=%s strict_entry=%s",
         message_id,
+        indicator,
         signal.symbol,
         signal.direction.value,
         signal.entry,
