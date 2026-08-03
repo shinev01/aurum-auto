@@ -82,6 +82,30 @@ GERMANY40_CALL = """#Germany40 SHORT 📉
 
 
 class ParserTests(unittest.TestCase):
+    def test_take_profit_target_is_selected_from_config(self):
+        text = """#US100 LONG 📈
+
+🔸 Вход сейчас или 27791.7
+🛑 SL 27730.4
+
+🎯 TP1  27853.0
+🎯 TP2  27914.3
+🎯 TP3  27975.6
+🎯 TP4  28036.9
+
+[пообщаться насчет сделки](https://t.me/example)
+"""
+        expected = {1: 27853.0, 2: 27914.3, 3: 27975.6, 4: 28036.9}
+        for target, price in expected.items():
+            with self.subTest(target=target):
+                signal = parse_signal(115, text, take_profit_target=target)
+                self.assertIsNotNone(signal)
+                self.assertEqual(signal.take_profit, price)
+
+    def test_invalid_take_profit_target_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "from 1 to 4"):
+            parse_signal(116, LONG_CALL, take_profit_target=5)
+
     def test_gold_call_with_links_uses_tp2(self):
         text = """#GOLD SHORT 📉
 

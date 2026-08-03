@@ -31,6 +31,8 @@ class TradingConfig:
     send_attempts: int
     retry_delay_seconds: float
     magic_number: int
+    take_profit_target: int = 2
+    strict_call_entry: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,7 @@ class GoogleSheetsConfig:
     account: str
     sync_interval_seconds: int
     history_lookback_days: int
+    auto_setup: bool = True
 
 
 @dataclass(frozen=True)
@@ -139,6 +142,8 @@ def load_config(config_path: str | Path) -> AppConfig:
         send_attempts=max(1, int(trading_raw.get("send_attempts", 3))),
         retry_delay_seconds=max(0.0, float(trading_raw.get("retry_delay_seconds", 2))),
         magic_number=int(trading_raw.get("magic_number", 397897)),
+        take_profit_target=int(trading_raw.get("take_profit_target", 2)),
+        strict_call_entry=bool(trading_raw.get("strict_call_entry", False)),
     )
     if trading.risk_percent != 1.0:
         raise ValueError("This strategy is locked to the agreed nominal risk_percent: 1.0")
@@ -152,6 +157,8 @@ def load_config(config_path: str | Path) -> AppConfig:
         )
     if trading.lot_step != 0.01:
         raise ValueError("This strategy is locked to the agreed lot_step: 0.01")
+    if trading.take_profit_target not in {1, 2, 3, 4}:
+        raise ValueError("trading.take_profit_target must be an integer from 1 to 4")
 
     accounts_raw = raw.get("accounts")
     if not isinstance(accounts_raw, list) or not accounts_raw:
@@ -240,6 +247,7 @@ def load_config(config_path: str | Path) -> AppConfig:
             7,
             int(sheets_raw.get("history_lookback_days", 45)),
         ),
+        auto_setup=bool(sheets_raw.get("auto_setup", True)),
     )
     if google_sheets.enabled:
         if not google_sheets.spreadsheet_id:

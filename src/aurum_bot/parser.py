@@ -23,11 +23,9 @@ ENTRY_RE = re.compile(
 SL_RE = re.compile(
     r"(?im)^\s*🛑?\s*SL\s+(?P<price>\d+(?:[.,]\d+)?)\s*$"
 )
-TP1_RE = re.compile(
-    r"(?im)^\s*🎯?\s*TP\s*1\s+(?P<price>\d+(?:[.,]\d+)?)\s*$"
-)
-TP2_RE = re.compile(
-    r"(?im)^\s*(?:\S+\s*)?TP\s*2\s+(?P<price>\d+(?:[.,]\d+)?)\s*$"
+TP_RE = re.compile(
+    r"(?im)^\s*(?:\S+\s*)?TP\s*(?P<number>[1-4])\s+"
+    r"(?P<price>\d+(?:[.,]\d+)?)\s*$"
 )
 
 
@@ -46,15 +44,24 @@ def is_supported_symbol(symbol: str) -> bool:
     return normalized in ALLOWED_SYMBOLS or FOREX_SYMBOL_RE.fullmatch(normalized) is not None
 
 
-def parse_signal(message_id: int, text: str | None) -> Signal | None:
+def parse_signal(
+    message_id: int,
+    text: str | None,
+    take_profit_target: int = 2,
+) -> Signal | None:
     """Parse a strict entry call; status/TP/SL posts intentionally return None."""
+    if take_profit_target not in {1, 2, 3, 4}:
+        raise ValueError("take_profit_target must be an integer from 1 to 4")
     if not text:
         return None
 
     header = HEADER_RE.search(text)
     entry_match = ENTRY_RE.search(text)
     sl_match = SL_RE.search(text)
-    tp_match = TP2_RE.search(text)
+    take_profits = {
+        int(match.group("number")): _price(match) for match in TP_RE.finditer(text)
+    }
+    tp_match = take_profits.get(take_profit_target)
     if not all((header, entry_match, sl_match, tp_match)):
         return None
 
@@ -66,7 +73,7 @@ def parse_signal(message_id: int, text: str | None) -> Signal | None:
     direction = Direction(header.group("direction").upper())
     entry = _price(entry_match)
     stop_loss = _price(sl_match)
-    take_profit = _price(tp_match)
+    take_profit = float(tp_match)
 
     if direction is Direction.LONG:
         valid_geometry = stop_loss < entry < take_profit

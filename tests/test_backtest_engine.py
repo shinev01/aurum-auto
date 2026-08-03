@@ -96,6 +96,20 @@ class BacktestEngineTests(unittest.TestCase):
         self.assertEqual(records[0].order_kind, "market")
         self.assertEqual(records[0].entry_price, 100)
 
+    def test_strict_call_entry_keeps_equal_quote_as_pending_stop(self):
+        records = simulate_strategy(
+            [signal()],
+            ticks((2, 99.9, 100), (3, 105, 106)),
+            STRATEGIES[0],
+            "GOLD",
+            point=0.01,
+            trade_stops_level=0,
+            strict_call_entry=True,
+        )
+        self.assertEqual(records[0].order_kind, "stop")
+        self.assertEqual(records[0].entry_price, 100)
+        self.assertEqual(records[0].exit_reason, "tp1")
+
     def test_too_worse_quote_places_limit_then_fills(self):
         records = simulate_strategy(
             [signal()],

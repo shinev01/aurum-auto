@@ -93,7 +93,11 @@ async def handle_message(
     message_id = int(message.id)
     # Claim durably before any external trading action. This is at-most-once by design.
     state.mark(message_id, "claimed")
-    signal = parse_signal(message_id, message.raw_text)
+    signal = parse_signal(
+        message_id,
+        message.raw_text,
+        take_profit_target=config.trading.take_profit_target,
+    )
     if signal is None:
         state.mark(message_id, "ignored_not_entry_call")
         LOGGER.info("Message %s ignored: not an allowed entry call", message_id)
@@ -138,13 +142,15 @@ async def handle_message(
 
     state.mark(message_id, "executing", signal=signal.to_dict())
     LOGGER.info(
-        "Signal %s (Индюк 1): %s %s entry=%s SL=%s TP2=%s",
+        "Signal %s (Индюк 1): %s %s entry=%s SL=%s TP%s=%s strict_entry=%s",
         message_id,
         signal.symbol,
         signal.direction.value,
         signal.entry,
         signal.stop_loss,
+        config.trading.take_profit_target,
         signal.take_profit,
+        config.trading.strict_call_entry,
     )
     results = await asyncio.to_thread(
         execute_for_accounts,
@@ -292,7 +298,10 @@ async def run(config: AppConfig) -> None:
     if config.google_sheets.enabled:
         candidate = SheetsTradeJournal(config.google_sheets)
         try:
-            await asyncio.to_thread(candidate.check_access)
+            if config.google_sheets.auto_setup:
+                await asyncio.to_thread(candidate.ensure_template)
+            else:
+                await asyncio.to_thread(candidate.check_access)
         except Exception:
             LOGGER.exception(
                 "Google Sheets journal is unavailable; bot will continue trading "

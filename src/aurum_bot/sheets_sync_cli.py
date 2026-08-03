@@ -25,7 +25,10 @@ def main() -> None:
         if item.name == config.google_sheets.account
     )
     journal = SheetsTradeJournal(config.google_sheets)
-    journal.check_access()
+    if config.google_sheets.auto_setup:
+        journal.ensure_template()
+    else:
+        journal.check_access()
     snapshots = collect_trade_snapshots(
         account,
         magic_number=config.trading.magic_number,

@@ -13,8 +13,65 @@ from .models import Direction, ExecutionResult, Signal
 
 SCOPES = ("https://www.googleapis.com/auth/spreadsheets",)
 TRADE_SHEET = "Сделки"
+WEEK_SHEET = "Недели"
+SETTINGS_SHEET = "Настройки"
 FIRST_DATA_ROW = 2
 LAST_DATA_ROW = 1000
+
+TRADE_HEADERS = (
+    "ID сделки",
+    "Счёт",
+    "Открытие",
+    "Закрытие",
+    "Инструмент",
+    "Направление",
+    "Объём",
+    "Цена входа",
+    "Цена выхода",
+    "Stop Loss",
+    "Take Profit",
+    "Комиссия",
+    "Своп",
+    "Валовый P&L",
+    "Чистый P&L",
+    "Неделя",
+    "Моя доля P&L",
+    "risk_base_usd",
+    "Риск, USD",
+    "Результат, R",
+    "Комментарий",
+    "Изм. моего капитала, %",
+)
+WEEK_HEADERS = (
+    "Неделя с",
+    "Неделя по",
+    "Мой капитал (начало)",
+    "Пополнение / вывод",
+    "P&L недели",
+    "Доходность",
+    "Моя доля P&L",
+    "Мой капитал (конец)",
+    "risk_base (начало)",
+    "Новый risk_base (ввод)",
+    "risk_base (конец)",
+    "Статус",
+    "Изм. моего капитала, %",
+)
+SETTINGS_HEADERS = ("Параметр", "Значение", "Как заполнять")
+SETTINGS_LABELS = (
+    ("Аккаунт", "Фиксировано: в учёт попадает только этот аккаунт"),
+    ("Мой стартовый капитал, USD", "Введи свой стартовый капитал"),
+    ("Стартовый risk_base_usd", "Введи текущее значение вручную"),
+    ("Первая неделя", "Укажи понедельник первой недели учёта"),
+    (
+        "Правило risk_base",
+        "Новое значение из листа Недели применяется со следующей недели",
+    ),
+    (
+        "Комиссия и своп",
+        "Вводятся отрицательными; чистый P&L считается автоматически",
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -100,6 +157,12 @@ class SheetsTradeJournal:
             return base
         return f"{base}/{quote(range_name, safe='')}"
 
+    def _spreadsheet_url(self) -> str:
+        return (
+            "https://sheets.googleapis.com/v4/spreadsheets/"
+            f"{self.config.spreadsheet_id}"
+        )
+
     def _request_json(
         self,
         method: str,
@@ -123,6 +186,275 @@ class SheetsTradeJournal:
             "GET",
             self._values_url(f"'{TRADE_SHEET}'!A1:B2"),
         )
+
+    def _read_values(self, range_name: str) -> list[list[Any]]:
+        payload = self._request_json(
+            "GET",
+            self._values_url(range_name),
+            params={"valueRenderOption": "FORMULA"},
+        )
+        return list(payload.get("values", []))
+
+    def _spreadsheet_metadata(self) -> dict[str, Any]:
+        return self._request_json(
+            "GET",
+            self._spreadsheet_url(),
+            params={
+                "fields": "spreadsheetId,spreadsheetUrl,sheets.properties"
+            },
+        )
+
+    def _batch_update_spreadsheet(self, requests: list[dict[str, Any]]) -> None:
+        if not requests:
+            return
+        self._request_json(
+            "POST",
+            self._spreadsheet_url() + ":batchUpdate",
+            body={"requests": requests},
+        )
+
+    @staticmethod
+    def _sheet_properties(metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        return {
+            str(sheet["properties"]["title"]): dict(sheet["properties"])
+            for sheet in metadata.get("sheets", [])
+        }
+
+    def _template_headers_match(self) -> bool:
+        expected = {
+            TRADE_SHEET: list(TRADE_HEADERS),
+            WEEK_SHEET: list(WEEK_HEADERS),
+            SETTINGS_SHEET: list(SETTINGS_HEADERS),
+        }
+        for title, headers in expected.items():
+            end_column = {22: "V", 13: "M", 3: "C"}[len(headers)]
+            rows = self._read_values(f"'{title}'!A1:{end_column}1")
+            if not rows or rows[0] != headers:
+                return False
+        return True
+
+    def ensure_template(self) -> None:
+        """Validate the owner-only template or initialize a completely blank sheet."""
+        try:
+            if self._template_headers_match():
+                return
+        except Exception:
+            pass
+        self.setup_new_template()
+
+    def setup_new_template(self) -> None:
+        """Initialize an empty spreadsheet; never rewrite a populated workbook."""
+        metadata = self._spreadsheet_metadata()
+        properties = self._sheet_properties(metadata)
+        for title, sheet in properties.items():
+            grid = sheet.get("gridProperties", {})
+            row_count = max(1, int(grid.get("rowCount", 1000)))
+            column_count = max(1, int(grid.get("columnCount", 26)))
+            end_column_index = min(column_count, 26)
+            end_column = chr(ord("A") + end_column_index - 1)
+            rows = self._read_values(f"'{title}'!A1:{end_column}{row_count}")
+            if any(any(value not in ("", None) for value in row) for row in rows):
+                raise RuntimeError(
+                    "Automatic Google Sheets template setup is allowed only for a "
+                    "completely empty spreadsheet. The existing workbook was not changed."
+                )
+
+        requests: list[dict[str, Any]] = []
+        reusable_title: str | None = None
+        if len(properties) == 1:
+            only_title = next(iter(properties))
+            if only_title not in {TRADE_SHEET, WEEK_SHEET, SETTINGS_SHEET}:
+                reusable_title = only_title
+                requests.append(
+                    {
+                        "updateSheetProperties": {
+                            "properties": {
+                                "sheetId": int(properties[only_title]["sheetId"]),
+                                "title": TRADE_SHEET,
+                                "gridProperties": {
+                                    "rowCount": LAST_DATA_ROW,
+                                    "columnCount": len(TRADE_HEADERS),
+                                },
+                            },
+                            "fields": "title,gridProperties(rowCount,columnCount)",
+                        }
+                    }
+                )
+        existing_after_rename = set(properties)
+        if reusable_title is not None:
+            existing_after_rename.remove(reusable_title)
+            existing_after_rename.add(TRADE_SHEET)
+        for title, rows, columns in (
+            (TRADE_SHEET, LAST_DATA_ROW, len(TRADE_HEADERS)),
+            (WEEK_SHEET, 300, len(WEEK_HEADERS)),
+            (SETTINGS_SHEET, 100, len(SETTINGS_HEADERS)),
+        ):
+            if title not in existing_after_rename:
+                requests.append(
+                    {
+                        "addSheet": {
+                            "properties": {
+                                "title": title,
+                                "gridProperties": {
+                                    "rowCount": rows,
+                                    "columnCount": columns,
+                                },
+                            }
+                        }
+                    }
+                )
+        self._batch_update_spreadsheet(requests)
+        metadata = self._spreadsheet_metadata()
+        properties = self._sheet_properties(metadata)
+        self._write_template_values()
+        self._format_and_prefill_template(properties)
+
+    def _write_template_values(self) -> None:
+        settings_data = [
+            self._range_for_sheet(SETTINGS_SHEET, 1, "A:C", list(SETTINGS_HEADERS)),
+            self._range_for_sheet(
+                SETTINGS_SHEET,
+                2,
+                "A:A",
+                [item[0] for item in SETTINGS_LABELS],
+                major_dimension="COLUMNS",
+            ),
+            self._range_for_sheet(
+                SETTINGS_SHEET,
+                2,
+                "C:C",
+                [item[1] for item in SETTINGS_LABELS],
+                major_dimension="COLUMNS",
+            ),
+            self._range_for_sheet(SETTINGS_SHEET, 2, "B", [self.config.account]),
+        ]
+        self._batch_write(
+            [
+                self._range_for_sheet(TRADE_SHEET, 1, "A:V", list(TRADE_HEADERS)),
+                self._range_for_sheet(WEEK_SHEET, 1, "A:M", list(WEEK_HEADERS)),
+                *settings_data,
+                *self._trade_formula_updates(2),
+                *self._week_formula_updates(2),
+                *self._week_formula_updates(3),
+            ]
+        )
+
+    def _format_and_prefill_template(
+        self,
+        properties: dict[str, dict[str, Any]],
+    ) -> None:
+        requests: list[dict[str, Any]] = []
+        for title, column_count in (
+            (TRADE_SHEET, len(TRADE_HEADERS)),
+            (WEEK_SHEET, len(WEEK_HEADERS)),
+            (SETTINGS_SHEET, len(SETTINGS_HEADERS)),
+        ):
+            sheet_id = int(properties[title]["sheetId"])
+            requests.extend(
+                [
+                    {
+                        "repeatCell": {
+                            "range": {
+                                "sheetId": sheet_id,
+                                "startRowIndex": 0,
+                                "endRowIndex": 1,
+                                "startColumnIndex": 0,
+                                "endColumnIndex": column_count,
+                            },
+                            "cell": {
+                                "userEnteredFormat": {
+                                    "backgroundColor": {
+                                        "red": 0.93,
+                                        "green": 0.93,
+                                        "blue": 0.93,
+                                    },
+                                    "textFormat": {"bold": True},
+                                    "horizontalAlignment": "CENTER",
+                                    "wrapStrategy": "WRAP",
+                                }
+                            },
+                            "fields": (
+                                "userEnteredFormat(backgroundColor,textFormat,"
+                                "horizontalAlignment,wrapStrategy)"
+                            ),
+                        }
+                    },
+                    {
+                        "updateSheetProperties": {
+                            "properties": {
+                                "sheetId": sheet_id,
+                                "gridProperties": {"frozenRowCount": 1},
+                            },
+                            "fields": "gridProperties.frozenRowCount",
+                        }
+                    },
+                ]
+            )
+
+        trade_id = int(properties[TRADE_SHEET]["sheetId"])
+        week_id = int(properties[WEEK_SHEET]["sheetId"])
+        for column in (14, 15, 16, 19, 21):
+            requests.append(
+                self._copy_formula_request(trade_id, 1, 2, LAST_DATA_ROW, column)
+            )
+        for column in (0, 1, 2, 4, 5, 6, 7, 8, 10, 11, 12):
+            requests.append(
+                self._copy_formula_request(week_id, 2, 3, 300, column)
+            )
+        requests.append(
+            {
+                "setDataValidation": {
+                    "range": {
+                        "sheetId": trade_id,
+                        "startRowIndex": 1,
+                        "endRowIndex": LAST_DATA_ROW,
+                        "startColumnIndex": 5,
+                        "endColumnIndex": 6,
+                    },
+                    "rule": {
+                        "condition": {
+                            "type": "ONE_OF_LIST",
+                            "values": [
+                                {"userEnteredValue": "BUY"},
+                                {"userEnteredValue": "SELL"},
+                            ],
+                        },
+                        "strict": True,
+                        "showCustomUi": True,
+                    },
+                }
+            }
+        )
+        self._batch_update_spreadsheet(requests)
+
+    @staticmethod
+    def _copy_formula_request(
+        sheet_id: int,
+        source_row: int,
+        start_row: int,
+        end_row: int,
+        column: int,
+    ) -> dict[str, Any]:
+        return {
+            "copyPaste": {
+                "source": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": source_row,
+                    "endRowIndex": source_row + 1,
+                    "startColumnIndex": column,
+                    "endColumnIndex": column + 1,
+                },
+                "destination": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": start_row,
+                    "endRowIndex": end_row,
+                    "startColumnIndex": column,
+                    "endColumnIndex": column + 1,
+                },
+                "pasteType": "PASTE_FORMULA",
+                "pasteOrientation": "NORMAL",
+            }
+        }
 
     def _trade_rows(self) -> tuple[dict[int, int], list[int]]:
         payload = self._request_json(
@@ -160,17 +492,116 @@ class SheetsTradeJournal:
         )
 
     @staticmethod
-    def _range(row: int, columns: str, values: list[Any]) -> dict[str, Any]:
+    def _range_for_sheet(
+        sheet: str,
+        row: int,
+        columns: str,
+        values: list[Any],
+        *,
+        major_dimension: str = "ROWS",
+    ) -> dict[str, Any]:
         if ":" in columns:
             start_column, end_column = columns.split(":", 1)
-            a1_range = f"{start_column}{row}:{end_column}{row}"
+            end_row = row + len(values) - 1 if major_dimension == "COLUMNS" else row
+            a1_range = f"{start_column}{row}:{end_column}{end_row}"
         else:
             a1_range = f"{columns}{row}"
         return {
-            "range": f"'{TRADE_SHEET}'!{a1_range}",
-            "majorDimension": "ROWS",
+            "range": f"'{sheet}'!{a1_range}",
+            "majorDimension": major_dimension,
             "values": [values],
         }
+
+    @staticmethod
+    def _range(row: int, columns: str, values: list[Any]) -> dict[str, Any]:
+        return SheetsTradeJournal._range_for_sheet(
+            TRADE_SHEET,
+            row,
+            columns,
+            values,
+        )
+
+    @classmethod
+    def _trade_formula_updates(cls, row: int) -> list[dict[str, Any]]:
+        return [
+            cls._range_for_sheet(
+                TRADE_SHEET,
+                row,
+                "O",
+                [f'=IF(N{row}="";"";N{row}+IF(L{row}="";0;L{row})+IF(M{row}="";0;M{row}))'],
+            ),
+            cls._range_for_sheet(
+                TRADE_SHEET,
+                row,
+                "P",
+                [f'=IF(D{row}="";"";INT(D{row})-WEEKDAY(INT(D{row});2)+1)'],
+            ),
+            cls._range_for_sheet(
+                TRADE_SHEET,
+                row,
+                "Q",
+                [f'=IF(O{row}="";"";O{row})'],
+            ),
+            cls._range_for_sheet(
+                TRADE_SHEET,
+                row,
+                "T",
+                [f'=IF(OR(O{row}="";S{row}="";S{row}=0);"";O{row}/S{row})'],
+            ),
+            cls._range_for_sheet(
+                TRADE_SHEET,
+                row,
+                "V",
+                [
+                    f'=IF(OR(Q{row}="";P{row}="");"";IFERROR('
+                    f'Q{row}/XLOOKUP(P{row};\'{WEEK_SHEET}\'!$A$2:$A$300;'
+                    f'\'{WEEK_SHEET}\'!$C$2:$C$300);""))'
+                ],
+            ),
+        ]
+
+    @classmethod
+    def _week_formula_updates(cls, row: int) -> list[dict[str, Any]]:
+        previous = row - 1
+        if row == 2:
+            week_start = f"='{SETTINGS_SHEET}'!B5"
+            capital_start = f"='{SETTINGS_SHEET}'!B3"
+            risk_start = f"='{SETTINGS_SHEET}'!B4"
+        else:
+            week_start = (
+                f'=IF(OR(A{previous}="";\'{SETTINGS_SHEET}\'!$B$5="");'
+                f'"";A{previous}+7)'
+            )
+            capital_start = f'=IF(A{row}="";"";H{previous})'
+            risk_start = f'=IF(A{row}="";"";K{previous})'
+        formulas = {
+            "A": week_start,
+            "B": f'=IF(A{row}="";"";A{row}+6)',
+            "C": capital_start,
+            "E": (
+                f'=IF(OR(A{row}="";C{row}="");"";SUMIFS('
+                f"'{TRADE_SHEET}'!$O$2:$O$1000;"
+                f"'{TRADE_SHEET}'!$D$2:$D$1000;\">=\"&A{row};"
+                f"'{TRADE_SHEET}'!$D$2:$D$1000;\"<\"&A{row}+7))"
+            ),
+            "F": f'=IFERROR(E{row}/C{row};"")',
+            "G": f'=IF(E{row}="";"";E{row})',
+            "H": (
+                f'=IF(C{row}="";"";C{row}+IF(D{row}="";0;D{row})+'
+                f'IF(G{row}="";0;G{row}))'
+            ),
+            "I": risk_start,
+            "K": f'=IF(OR(A{row}="";C{row}="");"";IF(J{row}="";I{row};J{row}))',
+            "L": (
+                f'=IF(OR(A{row}="";C{row}="");"";IF(J{row}="";'
+                '"Без изменений";"Применится со следующей недели"))'
+            ),
+            "M": f'=IF(OR(H{row}="";C{row}="";C{row}=0);"";H{row}/C{row}-1)',
+        }
+        return [
+            cls._range_for_sheet(WEEK_SHEET, row, column, [formula])
+            for column, formula in formulas.items()
+        ]
 
     def record_execution(
         self,
@@ -224,13 +655,14 @@ class SheetsTradeJournal:
             self._range(row, "J:K", [signal.stop_loss, signal.take_profit]),
             self._range(
                 row,
-                "S:T",
+                "R:S",
                 [
                     risk_base_usd,
                     risk_base_usd * risk_percent / 100,
                 ],
             ),
-            self._range(row, "V", [detail]),
+            self._range(row, "U", [detail]),
+            *self._trade_formula_updates(row),
         ]
         if is_new and result.execution_kind == "market":
             updates.append(
@@ -314,7 +746,8 @@ class SheetsTradeJournal:
                             ),
                         ],
                     ),
-                    self._range(row, "V", [snapshot.status]),
+                    self._range(row, "U", [snapshot.status]),
+                    *self._trade_formula_updates(row),
                 ]
             )
             count += 1

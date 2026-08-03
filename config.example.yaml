@@ -8,6 +8,10 @@ telegram:
 
 trading:
   risk_percent: 1.0
+  # Live orders use the selected target from each call: 1, 2, 3, or 4.
+  take_profit_target: 2
+  # true: always place an exact-TVH pending order (limit/stop), never enter at market.
+  strict_call_entry: false
   # Enter at market only while stop risk is within the inclusive 0.9R-1.1R range.
   min_market_risk_percent: 0.9
   max_market_risk_percent: 1.1
@@ -64,6 +68,8 @@ paths:
 
 google_sheets:
   enabled: false
+  # Create/repair the single-owner template and prefill its formulas.
+  auto_setup: true
   spreadsheet_id: ""
   credentials_file: "runtime/google-service-account.json"
   account: "fxpro_demo"

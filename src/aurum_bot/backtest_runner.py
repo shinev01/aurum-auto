@@ -348,6 +348,7 @@ def run_backtest(
                             trading.min_market_risk_percent / trading.risk_percent
                         ),
                         execution_delay_seconds=0.4,
+                        strict_call_entry=trading.strict_call_entry,
                     )
                     for record in records:
                         if not used_fallback:
@@ -389,6 +390,8 @@ def run_backtest(
             "mt5_server": str(history.account_info.server),
             "risk_base_usd": account.risk_base_usd,
             "risk_percent": trading.risk_percent,
+            "take_profit_target": trading.take_profit_target,
+            "strict_call_entry": trading.strict_call_entry,
             "min_market_risk_percent": trading.min_market_risk_percent,
             "max_market_risk_percent": trading.max_market_risk_percent,
             "lot_step": trading.lot_step,

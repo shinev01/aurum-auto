@@ -417,6 +417,7 @@ def execute(payload: dict[str, Any]) -> ExecutionResult:
             executable_price,
             minimum_distance,
             market_risk_in_range=market_risk_in_range,
+            strict_call_entry=bool(trading.get("strict_call_entry", False)),
         )
         comment = f"AURUM:{signal.message_id}"
         if execution_kind is ExecutionKind.MARKET:
@@ -430,7 +431,7 @@ def execute(payload: dict[str, Any]) -> ExecutionResult:
                 return ExecutionResult(
                     account.name,
                     "failed",
-                    "current price cannot use the exact requested SL and TP2",
+                    "current price cannot use the exact requested SL and TP",
                     volume=volume,
                     execution_kind=execution_kind.value,
                 )
@@ -469,9 +470,14 @@ def execute(payload: dict[str, Any]) -> ExecutionResult:
             }
 
         close_to_entry = abs(executable_price - entry) < minimum_distance
+        strict_call_entry = bool(trading.get("strict_call_entry", False))
         initial_attempts = (
             1
-            if execution_kind is ExecutionKind.LIMIT and close_to_entry
+            if (
+                execution_kind is ExecutionKind.LIMIT
+                and close_to_entry
+                and not strict_call_entry
+            )
             else int(trading["send_attempts"])
         )
         ok, ticket, send_detail, send_timing = _send_protected_order(
@@ -485,7 +491,11 @@ def execute(payload: dict[str, Any]) -> ExecutionResult:
             attempts=initial_attempts,
             retry_delay=float(trading["retry_delay_seconds"]),
         )
-        if not ok and execution_kind is ExecutionKind.LIMIT:
+        if (
+            not ok
+            and execution_kind is ExecutionKind.LIMIT
+            and not strict_call_entry
+        ):
             # A rejected limit may become a protected market order only if the
             # refreshed quote has reduced stop risk to the configured threshold.
             refreshed_tick = mt5.symbol_info_tick(broker_symbol)
@@ -527,7 +537,7 @@ def execute(payload: dict[str, Any]) -> ExecutionResult:
                         return ExecutionResult(
                             account.name,
                             "failed",
-                            "pending order rejected and exact SL/TP2 cannot protect fallback market order",
+                            "pending order rejected and exact SL/TP cannot protect fallback market order",
                             volume=volume,
                             execution_kind=ExecutionKind.MARKET.value,
                         )

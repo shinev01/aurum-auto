@@ -33,14 +33,19 @@ def choose_execution(
     executable_price: float,
     minimum_distance: float,
     market_risk_in_range: bool = False,
+    strict_call_entry: bool = False,
 ) -> ExecutionKind:
     """
     Decide using the executable side of the spread (ask for LONG, bid for SHORT).
 
-    Use market throughout the inclusive 0.9R-1.1R stop-risk range, including
+    Strict call-entry mode always preserves the call price as a pending order.
+    Otherwise, use market throughout the inclusive 0.9R-1.1R stop-risk range, including
     a quote exactly at the call entry (1R). Outside that range use a limit.
     A quote at/past SL is also outside the market-entry range and uses a limit.
     """
+    if strict_call_entry:
+        return ExecutionKind.LIMIT
+
     if direction is Direction.LONG:
         if executable_price <= stop_loss:
             return ExecutionKind.LIMIT

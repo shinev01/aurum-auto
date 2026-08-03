@@ -9,6 +9,20 @@ from aurum_bot.trading_math import (
 
 
 class ExecutionDecisionTests(unittest.TestCase):
+    def test_strict_call_entry_never_uses_market(self):
+        self.assertEqual(
+            choose_execution(
+                Direction.LONG,
+                100,
+                90,
+                100,
+                0.1,
+                market_risk_in_range=True,
+                strict_call_entry=True,
+            ),
+            ExecutionKind.LIMIT,
+        )
+
     def test_long_quote_inside_risk_range_is_market(self):
         self.assertEqual(
             choose_execution(

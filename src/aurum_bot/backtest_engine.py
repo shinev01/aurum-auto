@@ -218,7 +218,13 @@ def _entry_kind(
     minimum_distance: float,
     min_market_risk_ratio: float,
     max_market_risk_ratio: float,
+    strict_call_entry: bool = False,
 ) -> str:
+    if strict_call_entry:
+        if signal.direction is Direction.LONG:
+            return "limit" if signal.entry < executable_price else "stop"
+        return "limit" if signal.entry > executable_price else "stop"
+
     if signal.direction is Direction.LONG:
         if not signal.stop_loss < executable_price < signal.take_profits[0]:
             return "limit" if signal.entry < executable_price else "stop"
@@ -250,6 +256,7 @@ def simulate_strategy(
     min_market_risk_ratio: float = 0.9,
     max_entry_delay_seconds: float = 60,
     execution_delay_seconds: float = 0.4,
+    strict_call_entry: bool = False,
 ) -> list[BacktestRecord]:
     ordered = sorted(signals, key=lambda item: (item.timestamp_utc, item.message_id))
     records: list[BacktestRecord] = []
@@ -317,6 +324,7 @@ def simulate_strategy(
             minimum_distance,
             min_market_risk_ratio,
             max_market_risk_ratio,
+            strict_call_entry,
         )
         record.order_kind = kind
         if kind == "market":
@@ -358,6 +366,7 @@ def simulate_independent_strategy(
     min_market_risk_ratio: float = 0.9,
     max_entry_delay_seconds: float = 60,
     execution_delay_seconds: float = 0.4,
+    strict_call_entry: bool = False,
 ) -> list[BacktestRecord]:
     """Backtest every signal independently from entry until its first exit."""
     ordered = sorted(signals, key=lambda item: (item.timestamp_utc, item.message_id))
@@ -401,6 +410,7 @@ def simulate_independent_strategy(
             minimum_distance,
             min_market_risk_ratio,
             max_market_risk_ratio,
+            strict_call_entry,
         )
 
         if kind == "market":
