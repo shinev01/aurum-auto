@@ -99,6 +99,20 @@ class AccountConfig:
         )
         return fixed_amount + notional_amount
 
+    def has_configured_commission(self, signal_symbol: str) -> bool:
+        """Return whether config explicitly defines commission for a symbol."""
+        normalized = signal_symbol.upper()
+        fixed = self.commission_per_lot_usd or {}
+        rates = self.commission_rate_percent or {}
+        if normalized in fixed or normalized in rates:
+            return True
+        fallback = (
+            "FOREX"
+            if len(normalized) == 6 and normalized.isalpha()
+            else "DEFAULT"
+        )
+        return fallback in fixed or fallback in rates
+
 
 @dataclass(frozen=True)
 class ExecutionResult:

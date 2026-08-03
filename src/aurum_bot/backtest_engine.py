@@ -55,6 +55,9 @@ class BacktestRecord:
     tp1_touched: bool = False
     raw_lot: float | None = None
     rounded_lot: float | None = None
+    commission_per_lot_usd: float | None = None
+    commission_usd: float | None = None
+    commission_source: str | None = None
     actual_risk_usd: float | None = None
     actual_risk_percent: float | None = None
     pnl_usd: float | None = None

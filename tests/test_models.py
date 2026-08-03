@@ -49,6 +49,9 @@ class AccountConfigTests(unittest.TestCase):
         self.assertEqual(account.commission_for_one_lot("GBPUSD", 1.3, 100_000), 7)
         self.assertEqual(account.commission_for_one_lot("XAGUSD", 57.948, 5_000), 7)
         self.assertEqual(account.commission_for_one_lot("DE40", 25_000, 1), 0)
+        self.assertTrue(account.has_configured_commission("GBPUSD"))
+        self.assertTrue(account.has_configured_commission("XAGUSD"))
+        self.assertFalse(account.has_configured_commission("DE40"))
 
     def test_notional_commission_overrides_forex_fallback(self):
         account = AccountConfig(

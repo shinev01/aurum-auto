@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 
 from .models import AccountConfig, Direction
+from .mt5_commission import infer_round_turn_commission_per_lot
 
 
 LOGGER = logging.getLogger("aurum_bot.mt5_history")
@@ -258,3 +259,8 @@ class MT5History:
             close_price,
         )
         return None if result is None else float(result)
+
+    def infer_commission_for_one_lot(self, broker_symbol: str) -> float | None:
+        if self.mt5 is None:
+            raise RuntimeError("MT5History is not initialized")
+        return infer_round_turn_commission_per_lot(self.mt5, broker_symbol)

@@ -14,6 +14,10 @@ from .models import (
     ExecutionResult,
     Signal,
 )
+from .mt5_commission import (
+    DEFAULT_COMMISSION_PER_LOT_USD,
+    infer_round_turn_commission_per_lot,
+)
 from .trading_math import choose_execution, raw_volume_for_risk, volume_for_risk
 
 
@@ -439,11 +443,21 @@ def execute(payload: dict[str, Any]) -> ExecutionResult:
                 "failed",
                 f"order_calc_profit failed: {mt5.last_error()}",
             )
-        commission_one_lot = account.commission_for_one_lot(
-            signal.symbol,
-            entry,
-            float(symbol_info.trade_contract_size),
-        )
+        if account.has_configured_commission(signal.symbol):
+            commission_one_lot = account.commission_for_one_lot(
+                signal.symbol,
+                entry,
+                float(symbol_info.trade_contract_size),
+            )
+        else:
+            inferred_commission = infer_round_turn_commission_per_lot(
+                mt5, broker_symbol
+            )
+            commission_one_lot = (
+                inferred_commission
+                if inferred_commission is not None
+                else DEFAULT_COMMISSION_PER_LOT_USD
+            )
         raw_volume = raw_volume_for_risk(
             risk_base_usd=account.risk_base_usd,
             risk_percent=float(trading["risk_percent"]),

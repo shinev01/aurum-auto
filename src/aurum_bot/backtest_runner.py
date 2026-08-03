@@ -21,6 +21,7 @@ from .config import TradingConfig
 from .history_signals import HistoricalSignal
 from .models import AccountConfig, Direction
 from .mt5_history import MT5History, SymbolMetadata
+from .mt5_commission import DEFAULT_COMMISSION_PER_LOT_USD
 from .trading_math import raw_volume_for_risk, volume_for_risk
 
 
@@ -34,6 +35,7 @@ def _enrich_financials(
     history: MT5History,
     account: AccountConfig,
     trading: TradingConfig,
+    inferred_commission_one_lot: float | None,
 ) -> None:
     effective_step = max(metadata.volume_step, trading.lot_step)
     for record in records:
@@ -50,11 +52,20 @@ def _enrich_financials(
         if loss_one_lot is None or loss_one_lot == 0:
             record.note = "MT5 could not calculate one-lot stop loss"
             continue
-        commission_one_lot = account.commission_for_one_lot(
-            signal.symbol,
-            signal.entry,
-            metadata.contract_size,
-        )
+        if account.has_configured_commission(signal.symbol):
+            commission_one_lot = account.commission_for_one_lot(
+                signal.symbol,
+                signal.entry,
+                metadata.contract_size,
+            )
+            record.commission_source = "config"
+        elif inferred_commission_one_lot is not None:
+            commission_one_lot = inferred_commission_one_lot
+            record.commission_source = "mt5_history"
+        else:
+            commission_one_lot = DEFAULT_COMMISSION_PER_LOT_USD
+            record.commission_source = "default_7_usd_per_lot"
+        record.commission_per_lot_usd = commission_one_lot
         raw_lot = raw_volume_for_risk(
             account.risk_base_usd,
             trading.risk_percent,
@@ -72,6 +83,8 @@ def _enrich_financials(
         )
         record.raw_lot = raw_lot
         record.rounded_lot = rounded_lot
+        if rounded_lot is not None:
+            record.commission_usd = commission_one_lot * rounded_lot
         if (
             raw_lot is None
             or rounded_lot is None
@@ -267,6 +280,16 @@ def run_backtest(
                 signal for signal in signals if signal.symbol == signal_symbol
             ]
             metadata = history.symbol_metadata(signal_symbol)
+            inferred_commission_one_lot = None
+            if not account.has_configured_commission(signal_symbol):
+                inferred_commission_one_lot = history.infer_commission_for_one_lot(
+                    metadata.broker_symbol
+                )
+                LOGGER.info(
+                    "Commission for %s inferred from MT5 history: %s per lot",
+                    metadata.broker_symbol,
+                    inferred_commission_one_lot,
+                )
             broker_time_shift = timedelta(hours=mt5_time_offset_hours)
             ticks = history.download_ticks(
                 metadata,
@@ -373,6 +396,7 @@ def run_backtest(
                 history,
                 account,
                 trading,
+                inferred_commission_one_lot,
             )
             all_records.extend(symbol_records)
 
@@ -404,6 +428,11 @@ def run_backtest(
             "signal_count": len(signals),
             "tick_counts": tick_counts,
             "symbols": symbol_details,
+            "commission_policy": (
+                "explicit config first; otherwise median full-position commission "
+                "and fee per entry lot from completed MT5 history; otherwise "
+                "$7 per lot"
+            ),
             "strategies": [asdict(strategy) for strategy in STRATEGIES],
         }
     _write_results(all_records, summary, manifest, output_dir)
