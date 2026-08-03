@@ -8,8 +8,8 @@ telegram:
 
 trading:
   risk_percent: 1.0
-  # Live orders use the selected target from each call: 1, 2, 3, or 4.
-  take_profit_target: 2
+  # Select one of the strategy IDs documented in README.md.
+  exit_strategy: "sl_tp2"
   # true: always place an exact-TVH pending order (limit/stop), never enter at market.
   strict_call_entry: true
   # false: archive calls without an image; true: also execute them in MT5.
@@ -67,6 +67,7 @@ paths:
   lock_file: "runtime/aurum_bot.lock"
   # Cumulative archive of every complete call; a matching CSV is written too.
   calls_file: "data/all_calls.json"
+  strategy_state_dir: "runtime/exit-strategies"
 
 google_sheets:
   enabled: false

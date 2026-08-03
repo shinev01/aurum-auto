@@ -24,6 +24,7 @@ class Signal:
     entry: float
     stop_loss: float
     take_profit: float
+    take_profits: tuple[float, float, float, float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
@@ -39,6 +40,11 @@ class Signal:
             entry=float(data["entry"]),
             stop_loss=float(data["stop_loss"]),
             take_profit=float(data["take_profit"]),
+            take_profits=(
+                tuple(float(value) for value in data["take_profits"])
+                if data.get("take_profits") is not None
+                else None
+            ),
         )
 
 
@@ -120,6 +126,7 @@ class ExecutionResult:
     status: str
     detail: str
     ticket: int | None = None
+    tickets: list[int] | None = None
     volume: float | None = None
     execution_kind: str | None = None
     publication_to_receive_ms: int | None = None

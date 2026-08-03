@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import math
 from collections import Counter
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -26,6 +27,51 @@ from .trading_math import raw_volume_for_risk, volume_for_risk
 
 
 LOGGER = logging.getLogger("aurum_bot.backtest_runner")
+
+
+def _quantize_exit_legs(
+    legs: list[dict[str, Any]],
+    total_volume: float,
+    volume_min: float,
+    volume_step: float,
+) -> list[dict[str, Any]]:
+    """Convert theoretical exit fractions to broker-executable volumes.
+
+    Planned cumulative closes are rounded down to the volume step. Any amount
+    that cannot yet be closed remains in the position, and the final leg closes
+    the full executable remainder.
+    """
+    if not legs or total_volume <= 0 or volume_step <= 0 or volume_min <= 0:
+        return []
+    total_units = int(round(total_volume / volume_step))
+    minimum_units = max(1, int(math.ceil(volume_min / volume_step - 1e-9)))
+    used_units = 0
+    cumulative_fraction = 0.0
+    result: list[dict[str, Any]] = []
+    for index, leg in enumerate(legs):
+        cumulative_fraction += float(leg["fraction"])
+        if index == len(legs) - 1:
+            leg_units = total_units - used_units
+        else:
+            desired_units = int(
+                math.floor(cumulative_fraction * total_units + 1e-9)
+            )
+            leg_units = max(0, desired_units - used_units)
+            if 0 < leg_units < minimum_units:
+                leg_units = 0
+            remainder_units = total_units - used_units - leg_units
+            if 0 < remainder_units < minimum_units:
+                leg_units = 0
+        if leg_units <= 0:
+            continue
+        executed = dict(leg)
+        executed_volume = round(leg_units * volume_step, 10)
+        executed["planned_fraction"] = float(leg["fraction"])
+        executed["executed_volume"] = executed_volume
+        executed["fraction"] = executed_volume / total_volume
+        result.append(executed)
+        used_units += leg_units
+    return result
 
 
 def _enrich_financials(
@@ -108,16 +154,42 @@ def _enrich_financials(
             )
         if record.exit_price is None:
             continue
-        pnl = history.calc_profit(
-            metadata,
-            signal.direction,
+        theoretical_legs = record.exit_legs or [
+            {"fraction": 1.0, "price": record.exit_price}
+        ]
+        legs = _quantize_exit_legs(
+            theoretical_legs,
             rounded_lot,
-            record.entry_price,
-            record.exit_price,
+            metadata.volume_min,
+            effective_step,
         )
-        if pnl is None:
+        if not legs:
             continue
-        net_pnl = pnl - commission_one_lot * rounded_lot
+        record.exit_legs = legs
+        record.exit_price = sum(
+            float(leg["fraction"]) * float(leg["price"]) for leg in legs
+        )
+        reasons = [str(leg.get("reason") or record.exit_reason) for leg in legs]
+        record.exit_reason = (
+            reasons[0] if len(set(reasons)) == 1 else " + ".join(reasons)
+        )
+        gross_pnl = 0.0
+        financials_complete = True
+        for leg in legs:
+            leg_pnl = history.calc_profit(
+                metadata,
+                signal.direction,
+                float(leg["executed_volume"]),
+                record.entry_price,
+                float(leg["price"]),
+            )
+            if leg_pnl is None:
+                financials_complete = False
+                break
+            gross_pnl += leg_pnl
+        if not financials_complete:
+            continue
+        net_pnl = gross_pnl - commission_one_lot * rounded_lot
         record.pnl_usd = net_pnl
         record.pnl_percent = net_pnl / account.risk_base_usd * 100
         if record.actual_risk_usd:
@@ -142,15 +214,18 @@ def _summary(records: list[BacktestRecord], risk_base: float) -> dict[str, Any]:
     ]
     epsilon = 0.005
     total_pnl = sum(pnl_values)
+    wins = sum(value > epsilon for value in pnl_values)
     return {
         "signals": len(records),
         "entered_trades": sum(
             record.entry_price is not None for record in records
         ),
         "closed_trades": len(closed),
-        "wins": sum(value > epsilon for value in pnl_values),
+        "wins": wins,
         "losses": sum(value < -epsilon for value in pnl_values),
         "breakeven_results": sum(abs(value) <= epsilon for value in pnl_values),
+        "win_rate_percent": round(wins / len(closed) * 100, 4) if closed else None,
+        "total_r": round(sum(r_values), 4),
         "total_pnl_usd": round(total_pnl, 2),
         "return_on_fixed_base_percent": round(total_pnl / risk_base * 100, 4),
         "average_r": round(mean(r_values), 4) if r_values else None,
@@ -208,15 +283,18 @@ def _write_results(
         f"- Range: `{manifest['start_utc']}` — `{manifest['end_utc']}`",
         f"- Signals: `{manifest['signal_count']}`",
         "",
-        "| Strategy | Entered | Closed | Wins | Losses | BE | PnL USD | Return % | Avg R |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Strategy | Entered | Closed | WR % | Wins | Losses | BE | Total R | PnL USD | Return % | Avg R |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for strategy in STRATEGIES:
         item = summary[strategy.key]
         lines.append(
             f"| {strategy.title} | {item['entered_trades']} | "
-            f"{item['closed_trades']} | {item['wins']} | {item['losses']} | "
-            f"{item['breakeven_results']} | {item['total_pnl_usd']:.2f} | "
+            f"{item['closed_trades']} | "
+            f"{item['win_rate_percent'] if item['win_rate_percent'] is not None else 'n/a'} | "
+            f"{item['wins']} | {item['losses']} | "
+            f"{item['breakeven_results']} | {item['total_r']:.4f} | "
+            f"{item['total_pnl_usd']:.2f} | "
             f"{item['return_on_fixed_base_percent']:.4f} | "
             f"{item['average_r'] if item['average_r'] is not None else 'n/a'} |"
         )
@@ -232,7 +310,9 @@ def _write_results(
             "- Pending LIMIT/STOP entries fill at the requested call price when the trigger quote crosses it.",
             "- Pending entries remain active if price reaches or crosses SL/TP before entry.",
             "- TP exits use the requested target; stop exits use the first observed quote.",
-            "- Positions are never closed at breakeven; every strategy keeps the call SL.",
+            "- Baseline strategies keep the call SL; explicitly named variants may move it to breakeven or a reached target.",
+            "- A breakeven price exit still includes configured commission and can therefore be a small net loss.",
+            "- Timed breakeven checks move the stop only when the position is profitable at the named checkpoint.",
             "- If FxPro no longer provides historical ticks, broker M1 bars are "
             "used with the adverse extreme visited first; these rows are marked "
             "`m1_fallback`.",
@@ -415,6 +495,7 @@ def run_backtest(
             "risk_base_usd": account.risk_base_usd,
             "risk_percent": trading.risk_percent,
             "take_profit_target": trading.take_profit_target,
+            "exit_strategy": trading.exit_strategy,
             "strict_call_entry": trading.strict_call_entry,
             "enable_indicator_2": trading.enable_indicator_2,
             "min_market_risk_percent": trading.min_market_risk_percent,

@@ -14,7 +14,8 @@ from typing import Any
 from telethon import TelegramClient, events
 
 from .config import AppConfig, load_config
-from .executor import execute_for_accounts
+from .executor import execute_for_accounts, manage_exit_strategies
+from .exit_strategies import get_strategy
 from .history_signals import (
     message_has_image,
     parse_historical_signal,
@@ -91,6 +92,7 @@ async def handle_message(
     journal_queue: asyncio.Queue[JournalExecution] | None = None,
     received_at_ms: int | None = None,
     received_monotonic_ns: int | None = None,
+    mt5_lock: asyncio.Lock | None = None,
 ) -> None:
     received_at_ms = received_at_ms or time.time_ns() // 1_000_000
     received_monotonic_ns = received_monotonic_ns or time.monotonic_ns()
@@ -101,11 +103,19 @@ async def handle_message(
     signal = parse_signal(
         message_id,
         message.raw_text,
-        take_profit_target=config.trading.take_profit_target,
+        take_profit_target=get_strategy(config.trading.exit_strategy).target_number,
     )
     if signal is None:
         state.mark(message_id, "ignored_not_entry_call")
         LOGGER.info("Message %s ignored: not an allowed entry call", message_id)
+        return
+    if signal.take_profits is None:
+        state.mark(message_id, "ignored_missing_tp_levels", signal=signal.to_dict())
+        LOGGER.warning(
+            "Signal %s ignored: exit strategy %s requires TP1-TP4",
+            message_id,
+            config.trading.exit_strategy,
+        )
         return
 
     has_image = message_has_image(message)
@@ -159,21 +169,28 @@ async def handle_message(
         signal.direction.value,
         signal.entry,
         signal.stop_loss,
-        config.trading.take_profit_target,
+        get_strategy(config.trading.exit_strategy).target_number,
         signal.take_profit,
         config.trading.strict_call_entry,
     )
-    results = await asyncio.to_thread(
-        execute_for_accounts,
-        signal,
-        config.accounts,
-        config.trading,
-        {
-            "published_at_ms": published_at_ms,
-            "received_at_ms": received_at_ms,
-            "received_monotonic_ns": received_monotonic_ns,
-        },
-    )
+    async def execute() -> list[ExecutionResult]:
+        return await asyncio.to_thread(
+            execute_for_accounts,
+            signal,
+            config.accounts,
+            config.trading,
+            {
+                "published_at_ms": published_at_ms,
+                "received_at_ms": received_at_ms,
+                "received_monotonic_ns": received_monotonic_ns,
+            },
+            config.paths.strategy_state_dir,
+        )
+    if mt5_lock is None:
+        results = await execute()
+    else:
+        async with mt5_lock:
+            results = await execute()
     if not results:
         state.mark(
             message_id,
@@ -302,10 +319,29 @@ async def run(config: AppConfig) -> None:
     config.telegram.session_file.parent.mkdir(parents=True, exist_ok=True)
     state = StateStore(config.paths.state_file, config.telegram.channel_id)
     state.load()
+    mt5_lock = asyncio.Lock()
     LOGGER.info("State file for channel %s: %s", config.telegram.channel_id, state.path)
     journal: SheetsTradeJournal | None = None
     journal_queue: asyncio.Queue[JournalExecution] | None = None
     journal_tasks: list[asyncio.Task[None]] = []
+    async def strategy_manager_loop() -> None:
+        while True:
+            try:
+                async with mt5_lock:
+                    errors = await asyncio.to_thread(
+                        manage_exit_strategies,
+                        config.accounts,
+                        config.trading,
+                        config.paths.strategy_state_dir,
+                    )
+                for error in errors:
+                    LOGGER.error("Exit strategy manager: %s", error)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("Exit strategy manager failed")
+            await asyncio.sleep(2)
+    journal_tasks.append(asyncio.create_task(strategy_manager_loop()))
     if config.google_sheets.enabled:
         candidate = SheetsTradeJournal(config.google_sheets)
         try:
@@ -321,12 +357,12 @@ async def run(config: AppConfig) -> None:
         else:
             journal = candidate
             journal_queue = asyncio.Queue()
-            journal_tasks = [
+            journal_tasks.extend([
                 asyncio.create_task(
                     _journal_write_worker(journal_queue, journal)
                 ),
                 asyncio.create_task(_journal_sync_loop(journal, config)),
-            ]
+            ])
             LOGGER.info(
                 "Google Sheets journal enabled for account %s",
                 config.google_sheets.account,
@@ -392,6 +428,7 @@ async def run(config: AppConfig) -> None:
                         journal_queue,
                         received_at_ms,
                         received_monotonic_ns,
+                        mt5_lock,
                     )
                 except asyncio.CancelledError:
                     raise

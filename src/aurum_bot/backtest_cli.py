@@ -51,6 +51,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--results-dir", default="backtests")
     parser.add_argument("--account", default="fxpro_demo510")
     parser.add_argument(
+        "--terminal-path",
+        help=(
+            "Override the MT5 terminal executable for read-only history access. "
+            "Useful for a dedicated secondary terminal while the live bot is running."
+        ),
+    )
+    parser.add_argument(
         "--session-file",
         help="Optional separate read-only collector Telethon session file",
     )
@@ -153,6 +160,11 @@ def main() -> None:
                     f"Unknown account {args.account!r}; available: {sorted(accounts)}"
                 )
             account = accounts[args.account]
+            if args.terminal_path:
+                account = replace(
+                    account,
+                    terminal_path=Path(args.terminal_path).resolve(),
+                )
             if args.risk_base_usd is not None:
                 if args.risk_base_usd <= 0:
                     raise ValueError("--risk-base-usd must be positive")

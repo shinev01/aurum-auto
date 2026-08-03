@@ -7,6 +7,7 @@ from typing import Any
 
 import yaml
 
+from .exit_strategies import get_strategy
 from .models import AccountConfig
 
 
@@ -32,6 +33,7 @@ class TradingConfig:
     retry_delay_seconds: float
     magic_number: int
     take_profit_target: int = 2
+    exit_strategy: str = "sl_tp2"
     strict_call_entry: bool = True
     enable_indicator_2: bool = False
 
@@ -42,6 +44,7 @@ class PathsConfig:
     log_file: Path
     lock_file: Path
     calls_file: Path
+    strategy_state_dir: Path
 
 
 @dataclass(frozen=True)
@@ -144,6 +147,12 @@ def load_config(config_path: str | Path) -> AppConfig:
         retry_delay_seconds=max(0.0, float(trading_raw.get("retry_delay_seconds", 2))),
         magic_number=int(trading_raw.get("magic_number", 397897)),
         take_profit_target=int(trading_raw.get("take_profit_target", 2)),
+        exit_strategy=str(
+            trading_raw.get(
+                "exit_strategy",
+                f"sl_tp{int(trading_raw.get('take_profit_target', 2))}",
+            )
+        ).strip(),
         strict_call_entry=bool(trading_raw.get("strict_call_entry", True)),
         enable_indicator_2=bool(trading_raw.get("enable_indicator_2", False)),
     )
@@ -161,6 +170,7 @@ def load_config(config_path: str | Path) -> AppConfig:
         raise ValueError("This strategy is locked to the agreed lot_step: 0.01")
     if trading.take_profit_target not in {1, 2, 3, 4}:
         raise ValueError("trading.take_profit_target must be an integer from 1 to 4")
+    get_strategy(trading.exit_strategy)
 
     accounts_raw = raw.get("accounts")
     if not isinstance(accounts_raw, list) or not accounts_raw:
@@ -222,6 +232,10 @@ def load_config(config_path: str | Path) -> AppConfig:
         calls_file=_resolve(
             root,
             str(paths_raw.get("calls_file", "data/all_calls.json")),
+        ),
+        strategy_state_dir=_resolve(
+            root,
+            str(paths_raw.get("strategy_state_dir", "runtime/exit-strategies")),
         ),
     )
     sheets_raw = raw.get("google_sheets", {})

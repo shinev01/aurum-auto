@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,7 @@ from .mt5_commission import (
     DEFAULT_COMMISSION_PER_LOT_USD,
     infer_round_turn_commission_per_lot,
 )
+from .exit_strategies import effective_target, executable_legs, get_strategy
 from .trading_math import choose_execution, raw_volume_for_risk, volume_for_risk
 
 
@@ -27,6 +30,20 @@ def _finish(result: ExecutionResult) -> None:
 
 def _normalized(value: float, digits: int) -> float:
     return round(value, digits)
+
+
+def _save_strategy_plan(directory: str | None, account: str, plan: dict[str, Any]) -> None:
+    if not directory:
+        return
+    target_dir = Path(directory) / account
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{plan['message_id']}.json"
+    temporary = target.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    os.replace(temporary, target)
 
 
 def _success_codes(mt5: Any) -> set[int]:
@@ -346,6 +363,7 @@ def execute(payload: dict[str, Any]) -> ExecutionResult:
     signal = Signal.from_dict(payload["signal"])
     trading = payload["trading"]
     magic = int(trading["magic_number"])
+    strategy = get_strategy(str(trading.get("exit_strategy", "sl_tp2")))
 
     try:
         import MetaTrader5 as mt5
@@ -427,7 +445,9 @@ def execute(payload: dict[str, Any]) -> ExecutionResult:
         point = float(symbol_info.point)
         entry = _normalized(signal.entry, digits)
         stop_loss = _normalized(signal.stop_loss, digits)
-        take_profit = _normalized(signal.take_profit, digits)
+        if signal.take_profits is None:
+            return ExecutionResult(account.name, "failed", "selected exit strategy requires TP1-TP4")
+        take_profit = _normalized(signal.take_profits[strategy.target_number - 1], digits)
 
         order_side = (
             mt5.ORDER_TYPE_BUY
@@ -543,6 +563,30 @@ def execute(payload: dict[str, Any]) -> ExecutionResult:
             market_risk_in_range=market_risk_in_range,
             strict_call_entry=bool(trading.get("strict_call_entry", False)),
         )
+        if execution_kind is ExecutionKind.MARKET and strategy.target_by_order_kind is not None:
+            market_target, _ = strategy.target_by_order_kind
+            market_tp = _normalized(signal.take_profits[market_target - 1], digits)
+            market_target_ahead = (
+                executable_price < market_tp
+                if signal.direction is Direction.LONG
+                else executable_price > market_tp
+            )
+            if not market_target_ahead:
+                execution_kind = ExecutionKind.LIMIT
+        target_number = effective_target(
+            strategy,
+            execution_kind=execution_kind.value,
+            symbol=signal.symbol,
+            published_at_ms=(payload.get("timing") or {}).get("published_at_ms"),
+        )
+        take_profit = _normalized(signal.take_profits[target_number - 1], digits)
+        exit_legs = executable_legs(
+            strategy,
+            total_volume=volume,
+            volume_min=float(symbol_info.volume_min),
+            volume_step=max(float(symbol_info.volume_step), float(trading["lot_step"])),
+            target_number=target_number,
+        )
         comment = f"AURUM:{signal.message_id}"
         if execution_kind is ExecutionKind.MARKET:
             current_price = _normalized(executable_price, digits)
@@ -651,6 +695,20 @@ def execute(payload: dict[str, Any]) -> ExecutionResult:
                     ),
                 )
                 if refreshed_kind is ExecutionKind.MARKET:
+                    target_number = effective_target(
+                        strategy,
+                        execution_kind=ExecutionKind.MARKET.value,
+                        symbol=signal.symbol,
+                        published_at_ms=(payload.get("timing") or {}).get("published_at_ms"),
+                    )
+                    take_profit = _normalized(signal.take_profits[target_number - 1], digits)
+                    exit_legs = executable_legs(
+                        strategy,
+                        total_volume=volume,
+                        volume_min=float(symbol_info.volume_min),
+                        volume_step=max(float(symbol_info.volume_step), float(trading["lot_step"])),
+                        target_number=target_number,
+                    )
                     market_price = _normalized(refreshed_price, digits)
                     protected_geometry = (
                         stop_loss < market_price < take_profit
@@ -703,11 +761,44 @@ def execute(payload: dict[str, Any]) -> ExecutionResult:
                 volume=volume,
                 execution_kind=execution_kind.value,
             )
+        _save_strategy_plan(
+            payload.get("strategy_state_dir"),
+            account.name,
+            {
+                "version": 1,
+                "status": "active",
+                "message_id": signal.message_id,
+                "strategy": strategy.key,
+                "symbol": broker_symbol,
+                "signal_symbol": signal.symbol,
+                "direction": signal.direction.value,
+                "magic": magic,
+                "comment": comment,
+                "order_ticket": ticket,
+                "execution_kind": execution_kind.value,
+                "call_entry": entry,
+                "stop_loss": stop_loss,
+                "take_profits": list(signal.take_profits),
+                "final_target": target_number,
+                "exit_legs": [
+                    {"target": target, "volume": leg_volume, "closed": False}
+                    for target, leg_volume in exit_legs
+                ],
+                "initial_volume": volume,
+                "active_stop_target": -1,
+                "touched_target": 0,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "last_check_msc": None,
+                "entry_time_msc": None,
+                "entry_price": None,
+            },
+        )
         return ExecutionResult(
             account.name,
             "executed",
             f"{preparation_detail}; {send_detail}",
             ticket=ticket,
+            tickets=[ticket] if ticket is not None else None,
             volume=volume,
             execution_kind=execution_kind.value,
             **_execution_timing(payload, send_timing),

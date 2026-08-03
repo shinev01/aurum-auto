@@ -89,4 +89,9 @@ def parse_signal(
         entry=entry,
         stop_loss=stop_loss,
         take_profit=take_profit,
+        take_profits=(
+            tuple(float(take_profits[number]) for number in range(1, 5))
+            if all(number in take_profits for number in range(1, 5))
+            else None
+        ),
     )

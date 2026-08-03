@@ -5,6 +5,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
+from pathlib import Path
 
 from .config import TradingConfig
 from .models import AccountConfig, ExecutionResult, Signal
@@ -15,6 +16,7 @@ def _run_account(
     signal: Signal,
     trading: TradingConfig,
     timing: dict[str, int] | None = None,
+    strategy_state_dir: Path | None = None,
 ) -> ExecutionResult:
     if not account.supports_symbol(signal.symbol):
         return ExecutionResult(
@@ -29,6 +31,8 @@ def _run_account(
     }
     if timing is not None:
         payload["timing"] = timing
+    if strategy_state_dir is not None:
+        payload["strategy_state_dir"] = str(strategy_state_dir)
     try:
         completed = subprocess.run(
             [sys.executable, "-m", "aurum_bot.mt5_worker"],
@@ -62,6 +66,7 @@ def execute_for_accounts(
     accounts: tuple[AccountConfig, ...],
     trading: TradingConfig,
     timing: dict[str, int] | None = None,
+    strategy_state_dir: Path | None = None,
 ) -> list[ExecutionResult]:
     enabled = [account for account in accounts if account.enabled]
     if not enabled:
@@ -70,9 +75,38 @@ def execute_for_accounts(
     results: list[ExecutionResult] = []
     with ThreadPoolExecutor(max_workers=len(enabled)) as pool:
         futures = {
-            pool.submit(_run_account, account, signal, trading, timing): account.name
+            pool.submit(
+                _run_account, account, signal, trading, timing, strategy_state_dir
+            ): account.name
             for account in enabled
         }
         for future in as_completed(futures):
             results.append(future.result())
     return sorted(results, key=lambda item: item.account)
+
+
+def manage_exit_strategies(
+    accounts: tuple[AccountConfig, ...],
+    trading: TradingConfig,
+    strategy_state_dir: Path,
+) -> list[str]:
+    errors: list[str] = []
+    for account in accounts:
+        if not account.enabled:
+            continue
+        payload = {
+            "account": account.to_dict(),
+            "deviation_points": trading.deviation_points,
+            "strategy_state_dir": str(strategy_state_dir),
+        }
+        completed = subprocess.run(
+            [sys.executable, "-m", "aurum_bot.strategy_manager"],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            timeout=75,
+            check=False,
+        )
+        if completed.returncode != 0:
+            errors.append(f"{account.name}: {(completed.stderr or completed.stdout).strip()}")
+    return errors

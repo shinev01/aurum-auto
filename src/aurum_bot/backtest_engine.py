@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -8,20 +8,162 @@ import numpy as np
 
 from .history_signals import HistoricalSignal
 from .models import Direction
+from .exit_strategies import STRATEGIES, StrategySpec
 
 
-@dataclass(frozen=True)
-class StrategySpec:
-    key: str
-    title: str
-    target_number: int
-
-
-STRATEGIES = (
+_LEGACY_STRATEGIES = (
     StrategySpec("sl_tp1", "SL / TP1", 1),
     StrategySpec("sl_tp2", "SL / TP2", 2),
     StrategySpec("sl_tp3", "SL / TP3", 3),
     StrategySpec("sl_tp4", "SL / TP4", 4),
+    StrategySpec(
+        "tp2_50_tp4_50",
+        "50% TP2 / 50% TP4",
+        4,
+        (0.0, 0.5, 0.0, 0.5),
+    ),
+    StrategySpec(
+        "tp2_75_tp4_25",
+        "75% TP2 / 25% TP4",
+        4,
+        (0.0, 0.75, 0.0, 0.25),
+    ),
+    StrategySpec(
+        "tp2_25_tp4_75",
+        "25% TP2 / 75% TP4",
+        4,
+        (0.0, 0.25, 0.0, 0.75),
+    ),
+    StrategySpec(
+        "tp1_tp2_tp3_tp4_equal",
+        "25% at TP1 / TP2 / TP3 / TP4",
+        4,
+        (0.25, 0.25, 0.25, 0.25),
+    ),
+    StrategySpec(
+        "tp4_lock_tp1_after_tp2",
+        "TP4; after TP2 move SL to TP1",
+        4,
+        stop_moves=((2, 1),),
+    ),
+    StrategySpec(
+        "tp4_staircase",
+        "TP4 staircase: TP2->SL TP1, TP3->SL TP2",
+        4,
+        stop_moves=((2, 1), (3, 2)),
+    ),
+    StrategySpec(
+        "tp3_lock_tp1_after_tp2",
+        "TP3; after TP2 move SL to TP1",
+        3,
+        stop_moves=((2, 1),),
+    ),
+    StrategySpec("tp2_80_tp4_20", "80% TP2 / 20% TP4", 4, (0.0, 0.8, 0.0, 0.2)),
+    StrategySpec("tp2_60_tp4_40", "60% TP2 / 40% TP4", 4, (0.0, 0.6, 0.0, 0.4)),
+    StrategySpec("tp2_40_tp4_60", "40% TP2 / 60% TP4", 4, (0.0, 0.4, 0.0, 0.6)),
+    StrategySpec(
+        "tp1_25_tp2_50_tp4_25",
+        "25% TP1 / 50% TP2 / 25% TP4",
+        4,
+        (0.25, 0.5, 0.0, 0.25),
+    ),
+    StrategySpec(
+        "tp1_tp2_tp4_thirds",
+        "33% TP1 / 33% TP2 / 34% TP4",
+        4,
+        (0.33, 0.33, 0.0, 0.34),
+    ),
+    StrategySpec("tp1_50_tp4_50", "50% TP1 / 50% TP4", 4, (0.5, 0.0, 0.0, 0.5)),
+    StrategySpec("tp3_50_tp4_50", "50% TP3 / 50% TP4", 4, (0.0, 0.0, 0.5, 0.5)),
+    StrategySpec("tp2_50_tp3_50", "50% TP2 / 50% TP3", 3, (0.0, 0.5, 0.5, 0.0)),
+    StrategySpec(
+        "market_tp2_pending_tp4",
+        "MARKET -> TP2; pending -> TP4",
+        4,
+        target_by_order_kind=(2, 4),
+    ),
+    StrategySpec(
+        "gold_indices_tp4_forex_tp2",
+        "GOLD/indices -> TP4; other symbols -> TP2",
+        4,
+        target_by_asset_class=(4, 2),
+    ),
+    StrategySpec(
+        "active_session_tp4_other_tp2",
+        "07:00-20:00 UTC -> TP4; other time -> TP2",
+        4,
+        session_target_numbers=(4, 2),
+    ),
+    StrategySpec(
+        "tp4_exit_2h_if_no_tp1",
+        "TP4; market exit after 2h if TP1 not touched",
+        4,
+        time_exit_minutes=120,
+        time_exit_if_no_tp1=True,
+    ),
+    StrategySpec(
+        "tp4_exit_4h_if_no_tp1",
+        "TP4; market exit after 4h if TP1 not touched",
+        4,
+        time_exit_minutes=240,
+        time_exit_if_no_tp1=True,
+    ),
+    StrategySpec("tp4_be_after_tp1", "TP4; after TP1 move SL to BE", 4, stop_moves=((1, 0),)),
+    StrategySpec("tp4_be_after_tp2", "TP4; after TP2 move SL to BE", 4, stop_moves=((2, 0),)),
+    StrategySpec("tp3_be_after_tp1", "TP3; after TP1 move SL to BE", 3, stop_moves=((1, 0),)),
+    StrategySpec("tp3_be_after_tp2", "TP3; after TP2 move SL to BE", 3, stop_moves=((2, 0),)),
+    StrategySpec(
+        "tp4_full_staircase",
+        "TP4 staircase: TP1->BE, TP2->TP1, TP3->TP2",
+        4,
+        stop_moves=((1, 0), (2, 1), (3, 2)),
+    ),
+    StrategySpec(
+        "tp4_soft_staircase",
+        "TP4 soft staircase: TP2->BE, TP3->TP1",
+        4,
+        stop_moves=((2, 0), (3, 1)),
+    ),
+    StrategySpec(
+        "tp2_50_tp4_50_be_after_tp2",
+        "50% TP2 / 50% TP4; runner SL to BE",
+        4,
+        (0.0, 0.5, 0.0, 0.5),
+        stop_moves=((2, 0),),
+    ),
+    StrategySpec(
+        "tp1_25_tp2_25_tp4_50_stair",
+        "25% TP1 / 25% TP2 / 50% TP4; TP1->BE, TP2->SL TP1",
+        4,
+        (0.25, 0.25, 0.0, 0.5),
+        stop_moves=((1, 0), (2, 1)),
+    ),
+    StrategySpec(
+        "tp1_50_tp4_50_be_after_tp1",
+        "50% TP1 / 50% TP4; runner SL to BE",
+        4,
+        (0.5, 0.0, 0.0, 0.5),
+        stop_moves=((1, 0),),
+    ),
+    StrategySpec(
+        "tp2_33_tp4_67_lock_tp1",
+        "33% TP2 / 67% TP4; runner SL to TP1",
+        4,
+        (0.0, 0.33, 0.0, 0.67),
+        stop_moves=((2, 1),),
+    ),
+    StrategySpec(
+        "dynamic_tp3_tp4_be",
+        "TP2 <=30m -> TP4, otherwise TP3; after TP2 SL to BE",
+        4,
+        stop_moves=((2, 0),),
+        dynamic_tp2_minutes=30,
+    ),
+    StrategySpec("tp4_time_be_15m", "TP4; after 15m in profit move SL to BE", 4, timed_breakeven_minutes=15),
+    StrategySpec("tp4_time_be_30m", "TP4; after 30m in profit move SL to BE", 4, timed_breakeven_minutes=30),
+    StrategySpec("tp4_time_be_60m", "TP4; after 60m in profit move SL to BE", 4, timed_breakeven_minutes=60),
+    StrategySpec("tp4_time_be_120m", "TP4; after 120m in profit move SL to BE", 4, timed_breakeven_minutes=120),
+    StrategySpec("tp4_time_be_240m", "TP4; after 240m in profit move SL to BE", 4, timed_breakeven_minutes=240),
 )
 
 
@@ -52,6 +194,7 @@ class BacktestRecord:
     exit_time_utc: str | None = None
     exit_price: float | None = None
     exit_reason: str | None = None
+    exit_legs: list[dict[str, Any]] = field(default_factory=list)
     tp1_touched: bool = False
     raw_lot: float | None = None
     rounded_lot: float | None = None
@@ -76,7 +219,14 @@ class _Trade:
     record: BacktestRecord
     pending: bool
     entry_price: float | None = None
-    be_armed: bool = False
+    remaining_fraction: float = 1.0
+    highest_target_touched: int = 0
+    active_stop: float | None = None
+    active_stop_reason: str = "stop_loss"
+    entry_msc: int | None = None
+    timed_breakeven_checked: bool = False
+    time_exit_checked: bool = False
+    dynamic_final_target: int | None = None
 
 
 def _iso_from_msc(value: int) -> str:
@@ -132,22 +282,79 @@ def _make_record(
     )
 
 
-def _close_trade(
+def _effective_target_number(trade: _Trade, strategy: StrategySpec) -> int:
+    if trade.dynamic_final_target is not None:
+        return trade.dynamic_final_target
+    if strategy.target_by_order_kind is not None:
+        market_target, pending_target = strategy.target_by_order_kind
+        return market_target if trade.record.order_kind == "market" else pending_target
+    if strategy.target_by_asset_class is not None:
+        metal_index_target, other_target = strategy.target_by_asset_class
+        return (
+            metal_index_target
+            if trade.signal.symbol in {"XAUUSD", "DE40", "US100"}
+            else other_target
+        )
+    if strategy.session_target_numbers is not None:
+        active_target, other_target = strategy.session_target_numbers
+        hour = trade.signal.timestamp_utc.hour
+        return (
+            active_target
+            if strategy.session_start_hour_utc <= hour < strategy.session_end_hour_utc
+            else other_target
+        )
+    return strategy.target_number
+
+
+def _effective_fractions(
+    trade: _Trade,
+    strategy: StrategySpec,
+) -> tuple[float, float, float, float]:
+    if (
+        strategy.target_fractions is not None
+        and strategy.target_by_order_kind is None
+        and strategy.target_by_asset_class is None
+        and strategy.session_target_numbers is None
+        and strategy.dynamic_tp2_minutes is None
+    ):
+        return strategy.target_fractions
+    target_number = _effective_target_number(trade, strategy)
+    return tuple(
+        1.0 if number == target_number else 0.0 for number in range(1, 5)
+    )  # type: ignore[return-value]
+
+
+def _add_exit_leg(
     trade: _Trade,
     ticks: np.ndarray,
     index: int,
     reason: str,
-    target_price: float | None = None,
+    fraction: float,
+    price: float,
 ) -> None:
-    quote = (
-        float(ticks["bid"][index])
-        if trade.signal.direction is Direction.LONG
-        else float(ticks["ask"][index])
+    fraction = min(max(float(fraction), 0.0), trade.remaining_fraction)
+    if fraction <= 1e-12:
+        return
+    trade.record.exit_legs.append(
+        {
+            "fraction": round(fraction, 10),
+            "price": float(price),
+            "reason": reason,
+            "time_utc": _iso_from_msc(int(ticks["time_msc"][index])),
+        }
     )
+    trade.remaining_fraction = max(0.0, trade.remaining_fraction - fraction)
+
+
+def _finalize_trade(trade: _Trade, ticks: np.ndarray, index: int) -> None:
     trade.record.status = "closed"
-    trade.record.exit_reason = reason
     trade.record.exit_time_utc = _iso_from_msc(int(ticks["time_msc"][index]))
-    trade.record.exit_price = target_price if target_price is not None else quote
+    legs = trade.record.exit_legs
+    trade.record.exit_price = sum(
+        float(leg["fraction"]) * float(leg["price"]) for leg in legs
+    )
+    reasons = [str(leg["reason"]) for leg in legs]
+    trade.record.exit_reason = reasons[0] if len(set(reasons)) == 1 else " + ".join(reasons)
 
 
 def _advance_trade(
@@ -188,31 +395,179 @@ def _advance_trade(
             int(ticks["time_msc"][fill_index])
         )
         trade.record.entry_price = signal.entry
+        trade.entry_msc = int(ticks["time_msc"][fill_index])
         cursor = fill_index
 
-    target_price = signal.take_profits[strategy.target_number - 1]
-    prices = side[cursor : end_index + 1]
-    if signal.direction is Direction.LONG:
-        stop_index = _first_true(prices <= signal.stop_loss, cursor)
-        target_index = _first_true(prices >= target_price, cursor)
-    else:
-        stop_index = _first_true(prices >= signal.stop_loss, cursor)
-        target_index = _first_true(prices <= target_price, cursor)
-    exit_index, reason = _earlier(
-        (stop_index, "stop_loss"),
-        (target_index, f"tp{strategy.target_number}"),
-        prefer_second_on_tie=False,
-    )
-    if exit_index is None:
-        return True
-    _close_trade(
-        trade,
-        ticks,
-        exit_index,
-        reason or "unknown",
-        target_price if reason and reason.startswith("tp") else None,
-    )
-    return False
+    if trade.active_stop is None:
+        trade.active_stop = signal.stop_loss
+    stop_moves = dict(strategy.stop_moves)
+
+    while cursor <= end_index:
+        fractions = _effective_fractions(trade, strategy)
+        relevant_targets = {
+            number
+            for number, fraction in enumerate(fractions, start=1)
+            if fraction > 0
+        } | set(stop_moves)
+        if strategy.dynamic_tp2_minutes is not None and trade.dynamic_final_target is None:
+            relevant_targets.add(2)
+        remaining_targets = sorted(
+            number
+            for number in relevant_targets
+            if number > trade.highest_target_touched
+        )
+        next_target = remaining_targets[0] if remaining_targets else None
+        prices = side[cursor : end_index + 1]
+        if signal.direction is Direction.LONG:
+            stop_index = _first_true(prices <= float(trade.active_stop), cursor)
+            target_index = (
+                _first_true(
+                    prices >= signal.take_profits[next_target - 1], cursor
+                )
+                if next_target is not None
+                else None
+            )
+        else:
+            stop_index = _first_true(prices >= float(trade.active_stop), cursor)
+            target_index = (
+                _first_true(
+                    prices <= signal.take_profits[next_target - 1], cursor
+                )
+                if next_target is not None
+                else None
+            )
+        candidates: list[tuple[int, int, str]] = []
+        if stop_index is not None:
+            candidates.append((stop_index, 0, "stop"))
+        if target_index is not None:
+            candidates.append((target_index, 1, "target"))
+        if trade.entry_msc is not None:
+            if (
+                strategy.timed_breakeven_minutes is not None
+                and not trade.timed_breakeven_checked
+            ):
+                due_msc = trade.entry_msc + int(
+                    strategy.timed_breakeven_minutes * 60_000
+                )
+                due_index = max(
+                    cursor,
+                    int(np.searchsorted(ticks["time_msc"], due_msc, side="left")),
+                )
+                if due_index <= end_index:
+                    candidates.append((due_index, 2, "timed_breakeven"))
+            if strategy.time_exit_minutes is not None and not trade.time_exit_checked:
+                due_msc = trade.entry_msc + int(strategy.time_exit_minutes * 60_000)
+                due_index = max(
+                    cursor,
+                    int(np.searchsorted(ticks["time_msc"], due_msc, side="left")),
+                )
+                if due_index <= end_index:
+                    candidates.append((due_index, 3, "time_exit"))
+        event_index, _, event = min(candidates) if candidates else (None, 0, None)
+        if event_index is None:
+            return True
+
+        if event == "stop":
+            quote = (
+                float(ticks["bid"][event_index])
+                if signal.direction is Direction.LONG
+                else float(ticks["ask"][event_index])
+            )
+            _add_exit_leg(
+                trade,
+                ticks,
+                event_index,
+                trade.active_stop_reason,
+                trade.remaining_fraction,
+                quote,
+            )
+            _finalize_trade(trade, ticks, event_index)
+            return False
+
+        if event == "timed_breakeven":
+            trade.timed_breakeven_checked = True
+            quote = float(side[event_index])
+            profitable = (
+                quote > float(trade.entry_price)
+                if signal.direction is Direction.LONG
+                else quote < float(trade.entry_price)
+            )
+            if profitable:
+                trade.active_stop = float(trade.entry_price)
+                trade.active_stop_reason = "timed_breakeven_stop"
+            cursor = event_index
+            continue
+
+        if event == "time_exit":
+            trade.time_exit_checked = True
+            should_exit = not strategy.time_exit_if_no_tp1 or not trade.record.tp1_touched
+            if should_exit:
+                quote = float(side[event_index])
+                _add_exit_leg(
+                    trade,
+                    ticks,
+                    event_index,
+                    f"time_exit_{strategy.time_exit_minutes:g}m",
+                    trade.remaining_fraction,
+                    quote,
+                )
+                _finalize_trade(trade, ticks, event_index)
+                return False
+            cursor = event_index
+            continue
+
+        quote = float(side[event_index])
+        crossed_target = trade.highest_target_touched
+        for number, target_price in enumerate(signal.take_profits, start=1):
+            crossed = (
+                quote >= target_price
+                if signal.direction is Direction.LONG
+                else quote <= target_price
+            )
+            if crossed:
+                crossed_target = number
+        if (
+            strategy.dynamic_tp2_minutes is not None
+            and trade.dynamic_final_target is None
+            and crossed_target >= 2
+            and trade.entry_msc is not None
+        ):
+            elapsed_minutes = (
+                int(ticks["time_msc"][event_index]) - trade.entry_msc
+            ) / 60_000
+            trade.dynamic_final_target = (
+                strategy.dynamic_fast_target
+                if elapsed_minutes <= strategy.dynamic_tp2_minutes
+                else strategy.dynamic_slow_target
+            )
+            fractions = _effective_fractions(trade, strategy)
+        for number in range(trade.highest_target_touched + 1, crossed_target + 1):
+            fraction = fractions[number - 1]
+            if fraction > 0:
+                _add_exit_leg(
+                    trade,
+                    ticks,
+                    event_index,
+                    f"tp{number}",
+                    fraction,
+                    signal.take_profits[number - 1],
+                )
+            if number in stop_moves:
+                stop_target = stop_moves[number]
+                if stop_target == 0:
+                    trade.active_stop = float(trade.entry_price)
+                    trade.active_stop_reason = "breakeven_stop"
+                else:
+                    trade.active_stop = signal.take_profits[stop_target - 1]
+                    trade.active_stop_reason = f"trailing_stop_tp{stop_target}"
+        trade.highest_target_touched = crossed_target
+        trade.record.tp1_touched = crossed_target >= 1
+        if trade.remaining_fraction <= 1e-12:
+            _finalize_trade(trade, ticks, event_index)
+            return False
+        cursor = event_index
+
+    return True
 
 
 def _entry_kind(
@@ -339,6 +694,7 @@ def simulate_strategy(
                 record=record,
                 pending=False,
                 entry_price=float(executable_price),
+                entry_msc=decision_msc,
             )
         else:
             record.status = "pending"
@@ -426,6 +782,7 @@ def simulate_independent_strategy(
                 record=record,
                 pending=False,
                 entry_price=float(executable_price),
+                entry_msc=decision_msc,
             )
             start_index = decision_index
         else:

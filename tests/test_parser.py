@@ -82,6 +82,26 @@ GERMANY40_CALL = """#Germany40 SHORT 📉
 
 
 class ParserTests(unittest.TestCase):
+    def test_real_gold_call_with_all_targets_and_links(self):
+        text = """#GOLD SHORT 📉
+
+🔸 Вход сейчас или 4056.60
+🛑 SL 4064.73
+
+🎯 TP1  4048.46
+🎯 TP2  4040.32
+🎯 TP3  4032.18
+🎯 TP4  4024.04
+
+[пообщаться насчет сделки](https://t.me/example)
+[получать автоматический расчет позиции](https://t.me/c/3978977082/134)
+"""
+        signal = parse_signal(999, text, take_profit_target=2)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal.symbol, "XAUUSD")
+        self.assertEqual(signal.direction, Direction.SHORT)
+        self.assertEqual(signal.take_profits, (4048.46, 4040.32, 4032.18, 4024.04))
+
     def test_take_profit_target_is_selected_from_config(self):
         text = """#US100 LONG 📈
 
