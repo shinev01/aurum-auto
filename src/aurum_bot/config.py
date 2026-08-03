@@ -1,0 +1,261 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from .models import AccountConfig
+
+
+@dataclass(frozen=True)
+class TelegramConfig:
+    api_id: int
+    api_hash: str
+    phone: str
+    channel_id: int
+    channel_title: str
+    poll_interval_seconds: int
+    session_file: Path
+
+
+@dataclass(frozen=True)
+class TradingConfig:
+    risk_percent: float
+    min_market_risk_percent: float
+    max_market_risk_percent: float
+    lot_step: float
+    deviation_points: int
+    send_attempts: int
+    retry_delay_seconds: float
+    magic_number: int
+
+
+@dataclass(frozen=True)
+class PathsConfig:
+    state_file: Path
+    log_file: Path
+    lock_file: Path
+    calls_file: Path
+
+
+@dataclass(frozen=True)
+class GoogleSheetsConfig:
+    enabled: bool
+    spreadsheet_id: str
+    credentials_file: Path
+    account: str
+    sync_interval_seconds: int
+    history_lookback_days: int
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    root: Path
+    telegram: TelegramConfig
+    trading: TradingConfig
+    accounts: tuple[AccountConfig, ...]
+    paths: PathsConfig
+    google_sheets: GoogleSheetsConfig
+
+
+def load_dotenv(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
+def _resolve(root: Path, value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else root / path
+
+
+def _required_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value or value == "replace_me":
+        raise ValueError(f"Environment variable {name} is not configured")
+    return value
+
+
+def _mapping(data: Any, name: str) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError(f"{name} must be a mapping")
+    return data
+
+
+def load_config(config_path: str | Path) -> AppConfig:
+    path = Path(config_path).resolve()
+    root = path.parent
+    load_dotenv(root / ".env")
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Missing {path}. Copy config.example.yaml to config.yaml first."
+        )
+
+    try:
+        raw_yaml = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ValueError(
+            "config.yaml is not valid YAML. For Windows paths use forward slashes "
+            '(example: "C:/MT5/terminal64.exe") or single quotes.'
+        ) from exc
+    raw = _mapping(raw_yaml, "config")
+    telegram_raw = _mapping(raw.get("telegram"), "telegram")
+    trading_raw = _mapping(raw.get("trading"), "trading")
+    paths_raw = _mapping(raw.get("paths"), "paths")
+
+    api_id_text = _required_env("TELEGRAM_API_ID")
+    try:
+        api_id = int(api_id_text)
+    except ValueError as exc:
+        raise ValueError("TELEGRAM_API_ID must be an integer") from exc
+
+    telegram = TelegramConfig(
+        api_id=api_id,
+        api_hash=_required_env("TELEGRAM_API_HASH"),
+        phone=_required_env("TELEGRAM_PHONE"),
+        channel_id=int(telegram_raw["channel_id"]),
+        channel_title=str(telegram_raw["channel_title"]),
+        poll_interval_seconds=max(20, int(telegram_raw["poll_interval_seconds"])),
+        session_file=_resolve(root, str(telegram_raw["session_file"])),
+    )
+    trading = TradingConfig(
+        risk_percent=float(trading_raw.get("risk_percent", 1.0)),
+        min_market_risk_percent=float(
+            trading_raw.get("min_market_risk_percent", 0.9)
+        ),
+        max_market_risk_percent=float(
+            trading_raw.get("max_market_risk_percent", 1.1)
+        ),
+        lot_step=float(trading_raw.get("lot_step", 0.01)),
+        deviation_points=int(trading_raw.get("deviation_points", 20)),
+        send_attempts=max(1, int(trading_raw.get("send_attempts", 3))),
+        retry_delay_seconds=max(0.0, float(trading_raw.get("retry_delay_seconds", 2))),
+        magic_number=int(trading_raw.get("magic_number", 397897)),
+    )
+    if trading.risk_percent != 1.0:
+        raise ValueError("This strategy is locked to the agreed nominal risk_percent: 1.0")
+    if trading.min_market_risk_percent != 0.9:
+        raise ValueError(
+            "This strategy is locked to the agreed min_market_risk_percent: 0.9"
+        )
+    if trading.max_market_risk_percent != 1.1:
+        raise ValueError(
+            "This strategy is locked to the agreed max_market_risk_percent: 1.1"
+        )
+    if trading.lot_step != 0.01:
+        raise ValueError("This strategy is locked to the agreed lot_step: 0.01")
+
+    accounts_raw = raw.get("accounts")
+    if not isinstance(accounts_raw, list) or not accounts_raw:
+        raise ValueError("accounts must contain at least one account")
+
+    accounts: list[AccountConfig] = []
+    names: set[str] = set()
+    for index, item in enumerate(accounts_raw):
+        account_raw = _mapping(item, f"accounts[{index}]")
+        name = str(account_raw["name"]).strip()
+        if not name or name in names:
+            raise ValueError(f"Account name must be non-empty and unique: {name!r}")
+        names.add(name)
+        symbols_raw = _mapping(account_raw["symbols"], f"accounts[{index}].symbols")
+        symbols = {
+            str(k).upper(): str(v).strip() for k, v in symbols_raw.items()
+        }
+        if not {"XAUUSD", "DE40"}.issubset(symbols):
+            raise ValueError(f"{name}: symbols must include XAUUSD and DE40 mappings")
+        if any(not broker_symbol for broker_symbol in symbols.values()):
+            raise ValueError(f"{name}: broker symbol names must be non-empty")
+        fixed_commission_raw = _mapping(
+            account_raw.get("commission_per_lot_usd", {}),
+            f"accounts[{index}].commission_per_lot_usd",
+        )
+        rate_commission_raw = _mapping(
+            account_raw.get("commission_rate_percent", {}),
+            f"accounts[{index}].commission_rate_percent",
+        )
+        fixed_commission = {
+            str(k).upper(): float(v) for k, v in fixed_commission_raw.items()
+        }
+        rate_commission = {
+            str(k).upper(): float(v) for k, v in rate_commission_raw.items()
+        }
+        if any(value < 0 for value in fixed_commission.values()):
+            raise ValueError(f"{name}: commission_per_lot_usd cannot be negative")
+        if any(value < 0 for value in rate_commission.values()):
+            raise ValueError(f"{name}: commission_rate_percent cannot be negative")
+        risk_base = float(account_raw["risk_base_usd"])
+        if risk_base <= 0:
+            raise ValueError(f"{name}: risk_base_usd must be positive")
+        accounts.append(
+            AccountConfig(
+                name=name,
+                enabled=bool(account_raw.get("enabled", False)),
+                risk_base_usd=risk_base,
+                terminal_path=str(account_raw["terminal_path"]),
+                symbols=symbols,
+                commission_per_lot_usd=fixed_commission,
+                commission_rate_percent=rate_commission,
+            )
+        )
+
+    paths = PathsConfig(
+        state_file=_resolve(root, str(paths_raw["state_file"])),
+        log_file=_resolve(root, str(paths_raw["log_file"])),
+        lock_file=_resolve(root, str(paths_raw["lock_file"])),
+        calls_file=_resolve(
+            root,
+            str(paths_raw.get("calls_file", "data/all_calls.json")),
+        ),
+    )
+    sheets_raw = raw.get("google_sheets", {})
+    if sheets_raw is None:
+        sheets_raw = {}
+    sheets_raw = _mapping(sheets_raw, "google_sheets")
+    google_sheets = GoogleSheetsConfig(
+        enabled=bool(sheets_raw.get("enabled", False)),
+        spreadsheet_id=str(sheets_raw.get("spreadsheet_id", "")).strip(),
+        credentials_file=_resolve(
+            root,
+            str(
+                sheets_raw.get(
+                    "credentials_file",
+                    "runtime/google-service-account.json",
+                )
+            ),
+        ),
+        account=str(sheets_raw.get("account", "fxpro_demo510")).strip(),
+        sync_interval_seconds=max(
+            30,
+            int(sheets_raw.get("sync_interval_seconds", 120)),
+        ),
+        history_lookback_days=max(
+            7,
+            int(sheets_raw.get("history_lookback_days", 45)),
+        ),
+    )
+    if google_sheets.enabled:
+        if not google_sheets.spreadsheet_id:
+            raise ValueError(
+                "google_sheets.spreadsheet_id is required when integration is enabled"
+            )
+        if google_sheets.account not in names:
+            raise ValueError(
+                f"google_sheets.account does not match a configured account: "
+                f"{google_sheets.account!r}"
+            )
+    return AppConfig(
+        root=root,
+        telegram=telegram,
+        trading=trading,
+        accounts=tuple(accounts),
+        paths=paths,
+        google_sheets=google_sheets,
+    )

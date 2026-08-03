@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aurum-mt5-bot"
+version = "0.1.0"
+description = "Telegram signal executor for isolated MetaTrader 5 accounts"
+requires-python = ">=3.10"
+dependencies = [
+  "MetaTrader5>=5.0",
+  "PyYAML>=6.0,<7",
+  "Telethon>=1.44,<2",
+  "google-auth[requests]>=2,<3",
+]
+
+[project.scripts]
+aurum-bot = "aurum_bot.main:main"
+aurum-sheets-sync = "aurum_bot.sheets_sync_cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

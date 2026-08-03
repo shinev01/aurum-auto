@@ -1,0 +1,4 @@
+MetaTrader5>=5.0
+PyYAML>=6.0,<7
+Telethon>=1.44,<2
+google-auth[requests]>=2,<3

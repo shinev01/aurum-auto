@@ -1,0 +1,19 @@
+.venv/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.codex-remote-attachments/
+.env
+config.yaml
+runtime/
+logs/
+backtests/
+data/
+*.session
+*.session-journal
+*service-account*.json
+# Local broker terminal installations are large, machine-specific, and may
+# contain saved account/session data.
+fxpro/
+.local-mt5-secondary/

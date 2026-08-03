@@ -1,0 +1,71 @@
+telegram:
+  # ID from https://web.telegram.org/k/#-3978977082.
+  channel_id: 3978977082
+  channel_title: "Aurum Research Club"
+  # Kept for backward-compatible config loading; NewMessage events do not poll.
+  poll_interval_seconds: 20
+  session_file: "runtime/telegram_user"
+
+trading:
+  risk_percent: 1.0
+  # Enter at market only while stop risk is within the inclusive 0.9R-1.1R range.
+  min_market_risk_percent: 0.9
+  max_market_risk_percent: 1.1
+  # Round to the nearest hundredth and never request less than 0.01 lot.
+  lot_step: 0.01
+  deviation_points: 20
+  send_attempts: 3
+  retry_delay_seconds: 2
+  magic_number: 397897
+  # Pending limits remain GTC after price reaches or crosses SL/TP.
+
+accounts:
+  - name: "fxpro_demo"
+    enabled: true
+    risk_base_usd: 510
+    # Install/login to FxPro MT5, then set the exact path.
+    terminal_path: "C:/Program Files/FxPro MT5/terminal64.exe"
+    symbols:
+      XAUUSD: "GOLD"
+      XAGUSD: "SILVER"
+      DE40: "#Germany40"
+      US100: "#USNDAQ100"
+      # Six-letter FX pairs (GBPUSD, GBPJPY, USDJPY, etc.) automatically use
+      # the same name in MT5. Add an explicit mapping only if a broker differs.
+    # Full commission charged for one lot (both sides, when applicable).
+    commission_per_lot_usd:
+      FOREX: 7.0
+      XAUUSD: 7.0
+      XAGUSD: 7.0
+      US100: 1.5
+
+  - name: "secondary_demo"
+    enabled: false
+    risk_base_usd: 25000
+    terminal_path: "C:/Program Files/MetaTrader 5 Secondary/terminal64.exe"
+    symbols:
+      XAUUSD: "XAUUSD"
+      DE40: "GER30"
+      # US100 is intentionally omitted when this account must not trade it.
+      # Example override for a broker-specific suffix:
+      # GBPUSD: "GBPUSD.pro"
+    commission_per_lot_usd:
+      FOREX: 7.0
+    # Percentage of entry notional: lot * contract size * price * rate.
+    commission_rate_percent:
+      XAUUSD: 0.0016
+
+paths:
+  state_file: "runtime/state.json"
+  log_file: "logs/aurum_bot.log"
+  lock_file: "runtime/aurum_bot.lock"
+  # Cumulative archive of every complete call; a matching CSV is written too.
+  calls_file: "data/all_calls.json"
+
+google_sheets:
+  enabled: false
+  spreadsheet_id: ""
+  credentials_file: "runtime/google-service-account.json"
+  account: "fxpro_demo"
+  sync_interval_seconds: 120
+  history_lookback_days: 45
